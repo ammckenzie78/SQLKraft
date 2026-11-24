@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SQLKraft
+GenericName=SQL Server Management Studio
+Comment=Manage and query Microsoft SQL Server databases
+Exec=sqlkraft
+Icon=sqlkraft
+Terminal=false
+Categories=Development;Database;
+Keywords=sql;mssql;sqlserver;database;query;ssms;
+StartupWMClass=sqlkraft

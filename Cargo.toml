@@ -4,6 +4,29 @@ version = "0.1.0"
 edition = "2024"
 description = "A SQL Server management studio for Linux (and everywhere else), written in Rust"
 license = "MIT"
+repository = "https://github.com/ammckenzie78/SQLKraft"
+readme = "README.md"
+
+# `cargo deb` packaging (https://github.com/kornelski/cargo-deb).
+[package.metadata.deb]
+maintainer = "Andy Mckenzie <56596888+ammckenzie78@users.noreply.github.com>"
+copyright = "2026, Andy Mckenzie"
+section = "database"
+priority = "optional"
+# $auto adds the shared libraries the binary links against (libc, libgcc, ...).
+# eframe loads X11/Wayland/GL libraries at runtime with dlopen, so name them explicitly.
+depends = "$auto, libxkbcommon0, libgl1, libx11-6 | libwayland-client0"
+recommends = "xdg-desktop-portal"
+extended-description = """\
+A SQL Server management studio in the spirit of SSMS: Object Explorer, tabbed \
+query windows with syntax highlighting, multiple result grids, a Messages tab, \
+query cancel and CSV export. Native, single binary, no .NET or ODBC needed."""
+assets = [
+    ["target/release/sqlkraft", "usr/bin/", "755"],
+    ["packaging/sqlkraft.desktop", "usr/share/applications/", "644"],
+    ["packaging/sqlkraft.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["README.md", "usr/share/doc/sqlkraft/README.md", "644"],
+]
 
 [features]
 default = []

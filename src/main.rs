@@ -1,6 +1,10 @@
 use sqlkraft::{app, capture};
 
 fn main() -> eframe::Result {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("sqlkraft {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     capture::install();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

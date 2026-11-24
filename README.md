@@ -35,6 +35,47 @@ desktop app, a single binary with no .NET or ODBC, and it runs on Linux, Windows
 - You can open and save `.sql` files. You're prompted about unsaved changes when closing a tab or quitting.
 - Dark and light themes, and an adjustable editor font size (Ctrl+= / Ctrl+-).
 
+## Installing on Debian / Ubuntu
+
+Packages are available for amd64 and arm64 on Ubuntu 22.04+ and Debian 12+.
+
+### From the APT repository
+
+This is the recommended way, because `apt upgrade` then picks up new releases:
+
+```sh
+curl -fsSL https://ammckenzie78.github.io/SQLKraft/sqlkraft.gpg \
+  | sudo tee /usr/share/keyrings/sqlkraft.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/sqlkraft.gpg] https://ammckenzie78.github.io/SQLKraft stable main" \
+  | sudo tee /etc/apt/sources.list.d/sqlkraft.list
+sudo apt update
+sudo apt install sqlkraft
+```
+
+### From a single .deb
+
+Download a `.deb` from [Releases](https://github.com/ammckenzie78/SQLKraft/releases), then run:
+
+```sh
+sudo apt install ./sqlkraft_*.deb
+```
+
+## Releasing
+
+1. Bump `version` in `Cargo.toml`, then commit.
+2. Tag the commit with the same version and push the tag:
+
+   ```sh
+   git tag v0.2.0 && git push origin v0.2.0
+   ```
+
+The [Release workflow](.github/workflows/release.yml) then:
+- builds the `.deb`s and tarballs for amd64 and arm64;
+- creates a GitHub Release with those files and their SHA256 checksums;
+- rebuilds the signed APT repository on GitHub Pages from the five most recent stable releases.
+
+A tag with a hyphen, such as `v0.2.0-rc1`, becomes a pre-release and is left out of the APT repository.
+
 ## Building
 
 You need Rust 1.85 or later (edition 2024). Install it from [rustup.rs](https://rustup.rs).

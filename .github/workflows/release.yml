@@ -1,0 +1,214 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching the version in Cargo.toml) to publish a release:
+#   1. build .deb packages for amd64 and arm64
+#   2. create a GitHub Release with the packages and plain binaries attached
+#   3. rebuild the signed APT repository on GitHub Pages from the latest releases
+#
+# The APT step needs a repository secret APT_GPG_PRIVATE_KEY (ASCII-armoured private key)
+# and, if that key has one, APT_GPG_PASSPHRASE. Without the key, step 3 is skipped.
+# Run the workflow manually (Actions > Release > Run workflow) to rebuild only the APT repo.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    if: github.event_name == 'push'
+    name: Build ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          # Build on 22.04 so the binary runs on glibc 2.35+ (Ubuntu 22.04+, Debian 12+).
+          - runner: ubuntu-22.04
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $crate"
+            exit 1
+          fi
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libgl1-mesa-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libwayland-dev
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build .deb and tarball
+        run: |
+          cargo deb --locked
+          mkdir dist
+          cp target/debian/*.deb dist/
+          tar -C target/release -czf "dist/sqlkraft-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}.tar.gz" sqlkraft
+
+      - name: Smoke-test the package
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          sqlkraft --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/*
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          (cd dist && sha256sum * > SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "SQLKraft ${GITHUB_REF_NAME}" \
+            --generate-notes $prerelease
+
+  apt:
+    name: APT repository
+    needs: [release]
+    # Also runs on manual dispatch, when build and release are skipped.
+    if: always() && (needs.release.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+      APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+      # How many stable releases the APT repository keeps (lets users downgrade).
+      KEEP_RELEASES: "5"
+    steps:
+      - name: Check for signing key
+        id: key
+        run: |
+          if [ -z "$APT_GPG_PRIVATE_KEY" ]; then
+            echo "::notice::APT_GPG_PRIVATE_KEY is not set; skipping the APT repository."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download packages from recent releases
+        if: steps.key.outputs.present == 'true'
+        run: |
+          pool=site/pool/main/s/sqlkraft
+          mkdir -p "$pool"
+          gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+              --limit "$KEEP_RELEASES" --json tagName -q '.[].tagName' |
+            while read -r tag; do
+              gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p '*.deb' -D "$pool"
+            done
+          ls -l "$pool"
+          if [ -z "$(ls "$pool")" ]; then echo "::error::No .deb files found in releases"; exit 1; fi
+
+      - name: Build repository indexes
+        if: steps.key.outputs.present == 'true'
+        working-directory: site
+        run: |
+          for arch in amd64 arm64; do
+            dir=dists/stable/main/binary-$arch
+            mkdir -p "$dir"
+            apt-ftparchive --arch "$arch" packages pool > "$dir/Packages"
+            gzip -9kf "$dir/Packages"
+          done
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin="SQLKraft" \
+            -o APT::FTPArchive::Release::Label="SQLKraft" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Architectures="amd64 arm64" \
+            -o APT::FTPArchive::Release::Components="main" \
+            -o APT::FTPArchive::Release::Description="SQLKraft packages" \
+            release dists/stable > dists/stable/Release
+
+      - name: Sign repository
+        if: steps.key.outputs.present == 'true'
+        working-directory: site
+        run: |
+          export GNUPGHOME="$(mktemp -d)"
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          sign=(gpg --batch --yes --pinentry-mode loopback --passphrase "${APT_GPG_PASSPHRASE}")
+          "${sign[@]}" --clearsign -o dists/stable/InRelease dists/stable/Release
+          "${sign[@]}" --armor --detach-sign -o dists/stable/Release.gpg dists/stable/Release
+          # Public key in binary form for /usr/share/keyrings, plus an armoured copy.
+          gpg --export > sqlkraft.gpg
+          gpg --armor --export > sqlkraft.asc
+          gpg --verify dists/stable/InRelease
+
+      - name: Write landing page
+        if: steps.key.outputs.present == 'true'
+        working-directory: site
+        run: |
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          base="https://${owner,,}.github.io/${repo}"
+          {
+            echo '<!doctype html><meta charset="utf-8"><title>SQLKraft APT repository</title>'
+            echo '<style>body{font:16px/1.5 system-ui,sans-serif;max-width:46rem;margin:3rem auto;padding:0 1rem}pre{background:#f3f3f3;padding:1rem;overflow:auto}</style>'
+            echo '<h1>SQLKraft APT repository</h1>'
+            echo "<p>Install <a href=\"https://github.com/${GITHUB_REPOSITORY}\">SQLKraft</a> on Debian or Ubuntu (amd64 or arm64) and get updates through <code>apt upgrade</code>:</p>"
+            echo "<pre>curl -fsSL ${base}/sqlkraft.gpg | sudo tee /usr/share/keyrings/sqlkraft.gpg &gt; /dev/null"
+            echo "echo \"deb [signed-by=/usr/share/keyrings/sqlkraft.gpg] ${base} stable main\" | sudo tee /etc/apt/sources.list.d/sqlkraft.list"
+            echo "sudo apt update"
+            echo "sudo apt install sqlkraft</pre>"
+          } > index.html
+          touch .nojekyll
+
+      - uses: actions/configure-pages@v6
+        if: steps.key.outputs.present == 'true'
+
+      - uses: actions/upload-pages-artifact@v5
+        if: steps.key.outputs.present == 'true'
+        with:
+          path: site
+
+      - id: deploy
+        if: steps.key.outputs.present == 'true'
+        uses: actions/deploy-pages@v5

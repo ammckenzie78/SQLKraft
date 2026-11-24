@@ -938,6 +938,10 @@ impl SqlKraftApp {
             return;
         }
         self.tab_strip(ui);
+        // The tab strip may just have closed the last tab.
+        if self.tabs.is_empty() {
+            return;
+        }
         ui.separator();
         let font_size = self.settings.editor_font_size;
         let dark = ui.visuals().dark_mode;
