@@ -152,6 +152,10 @@ jobs:
         if: steps.key.outputs.present == 'true'
         working-directory: site
         run: |
+          # apt-ftparchive is not on every runner image.
+          if ! command -v apt-ftparchive > /dev/null; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends apt-utils
+          fi
           for arch in amd64 arm64; do
             dir=dists/stable/main/binary-$arch
             mkdir -p "$dir"
