@@ -21,6 +21,13 @@ desktop app, a single binary with no .NET or ODBC, and it runs on Linux, Windows
 - Right-click actions: *New Query*, *Select Top 1000 Rows*, *Script as SELECT*, *Script as CREATE* (tables, views, procedures, functions), *Execute Stored Procedure*, *Copy name*, *Refresh*, *Reconnect*, *Disconnect*.
 - Double-clicking a table or view runs Select Top 1000 Rows.
 
+**Properties window**
+- Press **F4** (or View → Properties Window, or right-click → *Properties*) to open a pane showing read-only properties of the item selected in Object Explorer, grouped by category like SSMS.
+- Servers: edition, version, collation, authentication mode, memory and parallelism settings, plus the connection's own settings.
+- Databases: owner, status, size, recovery model, compatibility level and the usual options.
+- Tables, views, procedures and functions: dates, row counts and space used, filegroups, module options, and MS_Description.
+- Columns, indexes and logins: type, nullability, defaults, identity, key and included columns, index options, password policy and server roles.
+
 **Query windows**
 - Each tab has its own connection (its own SPID), like SSMS.
 - T-SQL syntax highlighting and line numbers.
