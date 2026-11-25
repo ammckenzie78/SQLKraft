@@ -219,6 +219,12 @@ fn node_menu(
         NodeKind::Database { db } => {
             item(ui, "New Query", Action::NewQuery { server, db: Some(db.clone()) });
             item(ui, "Copy name", Action::CopyText(db.clone()));
+            ui.menu_button("Tasks", |ui| {
+                ui.menu_button("Shrink", |ui| {
+                    item(ui, "Database…", Action::Shrink { server, db: db.clone(), database: true });
+                    item(ui, "Files…", Action::Shrink { server, db: db.clone(), database: false });
+                });
+            });
         }
         NodeKind::Table { .. } | NodeKind::View { .. } | NodeKind::Procedure { .. } | NodeKind::Function { .. } => {
             let is_table = matches!(kind, NodeKind::Table { .. });
