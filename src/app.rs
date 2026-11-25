@@ -17,6 +17,7 @@ use crate::db::{
 use crate::explorer::{self, Children, Node, NodeKind};
 use crate::icons;
 use crate::scripting::{self, ScriptMode, ScriptTarget, Syntax};
+use crate::properties::{self, PropQuery, Property};
 use crate::settings::Settings;
 use crate::sql::{self, Tok};
 
@@ -31,6 +32,7 @@ const CLOSE_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Ke
 const TOGGLE_RESULTS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::R);
 const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals);
 const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
+const PROPERTIES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F4);
 
 // ---------------------------------------------------------------------------------------------
 // State
@@ -200,6 +202,30 @@ enum Action {
     Disconnect(usize),
     Reconnect(usize),
     CopyText(String),
+    /// Select a node; `show` also opens the Properties pane.
+    Select { server: usize, node: u64, kind: NodeKind, name: String, show: bool },
+}
+
+/// The node selected in Object Explorer.
+#[derive(Clone, PartialEq)]
+struct Selection {
+    server: usize,
+    node: u64,
+    kind: NodeKind,
+    name: String,
+}
+
+enum PropsState {
+    Loading(oneshot::Receiver<FetchResult>, PropQuery),
+    Loaded(Vec<Property>),
+    Failed(String),
+}
+
+/// What the Properties pane is showing, and for which selection.
+struct PropsView {
+    for_selection: Selection,
+    connection: Vec<Property>,
+    state: Option<PropsState>,
 }
 
 enum Prompt {
@@ -222,6 +248,8 @@ pub struct SqlKraftApp {
     allow_quit: bool,
     toast: Option<(String, Instant)>,
     show_about: bool,
+    selection: Option<Selection>,
+    props: Option<PropsView>,
 }
 
 impl SqlKraftApp {
@@ -246,6 +274,8 @@ impl SqlKraftApp {
             allow_quit: false,
             toast: None,
             show_about: false,
+            selection: None,
+            props: None,
         };
         app.open_dialog(DialogPurpose::ObjectExplorer, info);
         app
@@ -671,9 +701,15 @@ impl SqlKraftApp {
             Action::Disconnect(i) => {
                 if i < self.servers.len() {
                     self.servers.remove(i);
+                    // Server indexes after `i` shift down, so drop the selection rather than
+                    // point it at the wrong server.
+                    self.selection = None;
                 }
             }
             Action::Reconnect(i) => {
+                if self.selection.as_ref().is_some_and(|s| s.server == i) {
+                    self.selection = None;
+                }
                 if let Some(s) = self.servers.get_mut(i) {
                     s.session = Session::spawn(&self.rt, s.info.clone(), self.repaint.clone());
                     s.state = ConnState::Connecting;
@@ -684,6 +720,123 @@ impl SqlKraftApp {
                 // handled by the caller with access to ctx
                 let _ = t;
             }
+            Action::Select { server, node, kind, name, show } => {
+                self.selection = Some(Selection { server, node, kind, name });
+                if show && !self.settings.show_properties {
+                    self.toggle_properties();
+                }
+            }
+        }
+    }
+
+    fn toggle_properties(&mut self) {
+        self.settings.show_properties = !self.settings.show_properties;
+        self.settings.save();
+    }
+
+    /// Starts loading properties when the pane is open and the selection has changed.
+    fn sync_properties(&mut self) {
+        if !self.settings.show_properties {
+            return;
+        }
+        let Some(sel) = &self.selection else {
+            self.props = None;
+            return;
+        };
+        if self.props.as_ref().is_some_and(|p| &p.for_selection == sel && p.state.is_some()) {
+            return;
+        }
+        let Some(server) = self.servers.get(sel.server) else { return };
+        let connection = match sel.kind {
+            NodeKind::Server => properties::connection_properties(&server.info, server.facts.as_ref()),
+            _ => Vec::new(),
+        };
+        let state = match properties::query(&sel.kind) {
+            None => PropsState::Loaded(Vec::new()),
+            // Leaving the state empty retries on the next frame, once the connection is up.
+            Some(_) if server.state == ConnState::Connecting => {
+                self.props = Some(PropsView { for_selection: sel.clone(), connection, state: None });
+                return;
+            }
+            Some(_) if server.state != ConnState::Connected => PropsState::Failed("Not connected.".into()),
+            Some(q) => PropsState::Loading(server.session.fetch(q.sql.clone()), q),
+        };
+        self.props = Some(PropsView { for_selection: sel.clone(), connection, state: Some(state) });
+    }
+
+    fn pump_properties(&mut self) {
+        let Some(view) = &mut self.props else { return };
+        let Some(PropsState::Loading(rx, q)) = &mut view.state else { return };
+        let next = match rx.try_recv() {
+            Ok(Ok((_, rows))) => match q.parse(&rows) {
+                Ok(p) => PropsState::Loaded(p),
+                Err(e) => PropsState::Failed(e),
+            },
+            Ok(Err(e)) => PropsState::Failed(format!("{e:#}")),
+            Err(oneshot::error::TryRecvError::Empty) => return,
+            Err(oneshot::error::TryRecvError::Closed) => PropsState::Failed("Connection closed".into()),
+        };
+        view.state = Some(next);
+    }
+
+    fn properties_pane(&mut self, ui: &mut egui::Ui) {
+        let mut close = false;
+        let mut refresh = false;
+        ui.horizontal(|ui| {
+            ui.strong("Properties");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("✕").on_hover_text("Close (F4)").clicked() {
+                    close = true;
+                }
+                if ui.add_enabled(self.props.is_some(), egui::Button::new("⟳").small()).on_hover_text("Refresh").clicked() {
+                    refresh = true;
+                }
+            });
+        });
+        ui.separator();
+        match (&self.selection, &self.props) {
+            (None, _) | (_, None) => {
+                ui.weak("Select an item in Object Explorer.");
+            }
+            (Some(_), Some(view)) => {
+                let sel = &view.for_selection;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("{} {}", sel.kind.icon(), sel.name)).strong());
+                    ui.weak(properties::type_name(&sel.kind));
+                });
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    let loaded: &[Property] = match &view.state {
+                        Some(PropsState::Loaded(p)) => p,
+                        _ => &[],
+                    };
+                    let all: Vec<&Property> = view.connection.iter().chain(loaded.iter()).collect();
+                    property_grid(ui, &all);
+                    match &view.state {
+                        Some(PropsState::Loading(..)) | None => {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.weak("Loading…");
+                            });
+                        }
+                        Some(PropsState::Failed(e)) => {
+                            ui.colored_label(Color32::from_rgb(220, 80, 80), e.as_str());
+                        }
+                        Some(PropsState::Loaded(p)) if p.is_empty() && view.connection.is_empty() => {
+                            ui.weak("No properties for this item.");
+                        }
+                        _ => {}
+                    }
+                });
+            }
+        }
+        if refresh {
+            if let Some(v) = &mut self.props {
+                v.state = None;
+            }
+        }
+        if close {
+            self.toggle_properties();
         }
     }
 
@@ -692,7 +845,7 @@ impl SqlKraftApp {
     // -----------------------------------------------------------------------------------------
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let (exec, cancel, new_q, open, save, close, toggle, zin, zout) = ctx.input_mut(|i| {
+        let (exec, cancel, new_q, open, save, close, toggle, zin, zout, props) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&EXECUTE) | i.consume_shortcut(&EXECUTE_ALT),
                 i.consume_shortcut(&CANCEL) | i.consume_shortcut(&CANCEL_ALT),
@@ -703,10 +856,14 @@ impl SqlKraftApp {
                 i.consume_shortcut(&TOGGLE_RESULTS),
                 i.consume_shortcut(&ZOOM_IN),
                 i.consume_shortcut(&ZOOM_OUT),
+                i.consume_shortcut(&PROPERTIES),
             )
         });
         if self.dialog.is_some() {
             return;
+        }
+        if props {
+            self.toggle_properties();
         }
         let a = self.active;
         if exec {
@@ -794,6 +951,11 @@ impl SqlKraftApp {
                 }
             });
             ui.menu_button("View", |ui| {
+                let mut shown = self.settings.show_properties;
+                if ui.checkbox(&mut shown, "Properties Window\tF4").changed() {
+                    self.toggle_properties();
+                }
+                ui.separator();
                 if ui.checkbox(&mut self.settings.dark_mode, "Dark theme").changed() {
                     ui.ctx().set_theme(if self.settings.dark_mode { egui::Theme::Dark } else { egui::Theme::Light });
                     self.settings.save();
@@ -925,7 +1087,9 @@ impl SqlKraftApp {
                 if let ConnState::Failed(e) = &server.state {
                     ui.colored_label(Color32::from_rgb(220, 80, 80), e);
                 }
-                show_node(ui, &mut server.root, &server.session, si, &mut actions);
+                let selected = self.selection.as_ref().filter(|s| s.server == si).map(|s| s.node);
+                let ctx = NodeCtx { session: &server.session, server: si, selected, server_name: &server.info.server };
+                show_node(ui, &mut server.root, &ctx, &mut actions);
             }
         });
         for a in actions {
@@ -1241,6 +1405,7 @@ impl SqlKraftApp {
                     ("Ctrl+O / Ctrl+S", "Open / save .sql file"),
                     ("Ctrl+W, middle-click tab", "Close query window"),
                     ("Ctrl+R", "Show/hide results pane"),
+                    ("F4", "Show/hide Properties window"),
                     ("Ctrl+= / Ctrl+-", "Editor font size"),
                     ("Ctrl+C in grid", "Copy selected cell"),
                 ] {
@@ -1334,16 +1499,50 @@ fn apply_tab_event(tab: &mut QueryTab, ev: Event, max_rows: usize) {
 // Widgets
 // ---------------------------------------------------------------------------------------------
 
-fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usize, actions: &mut Vec<Action>) {
+/// What `show_node` needs from the server it is drawing.
+struct NodeCtx<'a> {
+    session: &'a Session,
+    server: usize,
+    server_name: &'a str,
+    /// The selected node's id, if it is in this server's tree.
+    selected: Option<u64>,
+}
+
+/// The name the Properties pane shows: the object's own name, without the extras in its label.
+fn node_name(node: &Node, server_name: &str) -> String {
+    match &node.kind {
+        NodeKind::Server => server_name.to_string(),
+        NodeKind::Column { name, .. } | NodeKind::Index { name, .. } | NodeKind::Login { name } => name.clone(),
+        _ => node.label.clone(),
+    }
+}
+
+fn show_node(ui: &mut egui::Ui, node: &mut Node, ctx: &NodeCtx, actions: &mut Vec<Action>) {
     let icon = node.kind.icon();
+    let is_selected = ctx.selected == Some(node.id);
+    let (node_id, node_kind, name) = (node.id, node.kind.clone(), node_name(node, ctx.server_name));
+    let select = |show: bool| Action::Select {
+        server: ctx.server,
+        node: node_id,
+        kind: node_kind.clone(),
+        name: name.clone(),
+        show,
+    };
     if node.is_leaf() {
         ui.horizontal(|ui| {
             ui.add_space(18.0);
-            let r = ui.add(egui::Label::new(format!("{icon} {}", node.label)).sense(egui::Sense::click()));
+            let r = ui.selectable_label(is_selected, format!("{icon} {}", node.label));
+            if r.clicked() || r.secondary_clicked() {
+                actions.push(select(false));
+            }
             r.context_menu(|ui| {
                 if ui.button("Copy").clicked() {
                     let name = node.label.split(" (").next().unwrap_or(&node.label).to_string();
                     actions.push(Action::CopyText(name));
+                    ui.close();
+                }
+                if properties::query(&node.kind).is_some() && ui.button("Properties").clicked() {
+                    actions.push(select(true));
                     ui.close();
                 }
             });
@@ -1353,15 +1552,17 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
     let id = ui.make_persistent_id(("node", node.id));
     let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
     if state.is_open() {
-        node.ensure_loading(session);
+        node.ensure_loading(ctx.session);
     }
     let kind = node.kind.clone();
     let badge = node.badge;
     let painted = icons::is_painted(&kind);
     let label = if painted { node.label.clone() } else { format!("{icon} {}", node.label) };
+    let select_action = select(false);
+    let show_action = select(true);
     let header = state.show_header(ui, |ui| {
         let icon_r = painted.then(|| icons::show(ui, &kind, badge));
-        let r = ui.add(egui::Label::new(label).sense(egui::Sense::click()).selectable(false));
+        let r = ui.selectable_label(is_selected, label);
         let r = match icon_r {
             Some(i) => r.union(i),
             None => r,
@@ -1369,7 +1570,7 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
         if r.double_clicked() {
             match &kind {
                 NodeKind::Table { .. } | NodeKind::View { .. } => {
-                    actions.push(Action::SelectTop { server, kind: kind.clone(), run: true })
+                    actions.push(Action::SelectTop { server: ctx.server, kind: kind.clone(), run: true })
                 }
                 _ => {}
             }
@@ -1392,13 +1593,23 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
                 ui.weak("(empty)");
             }
             for c in children {
-                show_node(ui, c, session, server, actions);
+                show_node(ui, c, ctx, actions);
             }
         }
     });
     let header_label = header_inner.inner;
+    if header_label.clicked() || header_label.secondary_clicked() {
+        actions.push(select_action);
+    }
     header_label.context_menu(|ui| {
-        node_menu(ui, &kind, server, actions, &refresh);
+        node_menu(ui, &kind, ctx.server, actions, &refresh);
+        if properties::query(&kind).is_some() {
+            ui.separator();
+            if ui.button("Properties").clicked() {
+                actions.push(show_action);
+                ui.close();
+            }
+        }
     });
     if header_label.clicked() {
         // Click on the label toggles, like a tree view.
@@ -1408,6 +1619,39 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
     }
     if refresh.get() {
         node.refresh();
+    }
+}
+
+/// Category headers, each with a two-column grid of label and value.
+fn property_grid(ui: &mut egui::Ui, props: &[&Property]) {
+    let mut categories: Vec<&'static str> = Vec::new();
+    for p in props {
+        // A category with no values at all (password policy on a Windows login) is left out.
+        if !categories.contains(&p.category) && props.iter().any(|q| q.category == p.category && !q.value.is_empty()) {
+            categories.push(p.category);
+        }
+    }
+    // One label width for every category, so the values line up down the whole pane.
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let label_width = props
+        .iter()
+        .map(|p| ui.painter().layout_no_wrap(p.label.to_string(), font.clone(), Color32::WHITE).size().x)
+        .fold(0.0, f32::max);
+    for cat in categories {
+        egui::CollapsingHeader::new(RichText::new(cat).strong()).id_salt(("props", cat)).default_open(true).show(ui, |ui| {
+            egui::Grid::new(("props_grid", cat))
+                .num_columns(2)
+                .striped(true)
+                .spacing([12.0, 4.0])
+                .min_col_width(label_width)
+                .show(ui, |ui| {
+                    for p in props.iter().filter(|p| p.category == cat) {
+                        ui.label(p.label);
+                        ui.add(egui::Label::new(&p.value).wrap());
+                        ui.end_row();
+                    }
+                });
+        });
     }
 }
 
@@ -1824,6 +2068,11 @@ impl eframe::App for SqlKraftApp {
             self.toolbar(ui);
         });
         egui::Panel::left("explorer").resizable(true).default_size(300.0).show(ui, |ui| self.object_explorer(ui));
+        self.sync_properties();
+        self.pump_properties();
+        if self.settings.show_properties {
+            egui::Panel::right("properties").resizable(true).default_size(300.0).show(ui, |ui| self.properties_pane(ui));
+        }
         egui::CentralPanel::default_margins().show(ui, |ui| self.query_area(ui));
 
         self.connect_dialog(&ctx);

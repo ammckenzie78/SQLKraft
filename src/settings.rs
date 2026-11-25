@@ -18,6 +18,8 @@ pub struct Settings {
     pub max_rows_per_result: usize,
     /// Server version that Script as CREATE / ALTER / DROP write for.
     pub script_target: ScriptTarget,
+    /// The Properties pane (F4) is open.
+    pub show_properties: bool,
 }
 
 impl Default for Settings {
@@ -28,6 +30,7 @@ impl Default for Settings {
             dark_mode: true,
             max_rows_per_result: 1_000_000,
             script_target: ScriptTarget::Connected,
+            show_properties: false,
         }
     }
 }
