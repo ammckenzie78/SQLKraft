@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::db::ConnectionInfo;
+use crate::scripting::ScriptTarget;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -15,13 +16,22 @@ pub struct Settings {
     /// Rows kept per result set; the rest is discarded (SSMS keeps everything, but a GUI grid
     /// holding 50M rows is not useful).
     pub max_rows_per_result: usize,
+    /// Server version that Script as CREATE / ALTER / DROP write for.
+    pub script_target: ScriptTarget,
     /// The Properties pane (F4) is open.
     pub show_properties: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { recent: Vec::new(), editor_font_size: 14.0, dark_mode: true, max_rows_per_result: 1_000_000, show_properties: false }
+        Self {
+            recent: Vec::new(),
+            editor_font_size: 14.0,
+            dark_mode: true,
+            max_rows_per_result: 1_000_000,
+            script_target: ScriptTarget::Connected,
+            show_properties: false,
+        }
     }
 }
 

@@ -16,6 +16,7 @@ use crate::db::{
 };
 use crate::explorer::{self, Children, Node, NodeKind};
 use crate::icons;
+use crate::scripting::{self, ScriptMode, ScriptTarget, Syntax};
 use crate::properties::{self, PropQuery, Property};
 use crate::settings::Settings;
 use crate::sql::{self, Tok};
@@ -175,9 +176,11 @@ struct ConnectDialog {
 }
 
 enum ScriptJob {
-    Definition { kind: NodeKind, rx: oneshot::Receiver<FetchResult> },
+    Definition { kind: NodeKind, rx: oneshot::Receiver<FetchResult>, mode: ScriptMode, syntax: Syntax },
     Table {
         kind: NodeKind,
+        mode: ScriptMode,
+        syntax: Syntax,
         cols: oneshot::Receiver<FetchResult>,
         keys: oneshot::Receiver<FetchResult>,
         cols_done: Option<Vec<Vec<Cell>>>,
@@ -194,7 +197,7 @@ struct PendingScript {
 enum Action {
     NewQuery { server: usize, db: Option<String> },
     SelectTop { server: usize, kind: NodeKind, run: bool },
-    ScriptCreate { server: usize, kind: NodeKind },
+    Script { server: usize, kind: NodeKind, mode: ScriptMode },
     ExecuteProc { server: usize, kind: NodeKind },
     Disconnect(usize),
     Reconnect(usize),
@@ -438,10 +441,17 @@ impl SqlKraftApp {
         let mut errors = Vec::new();
         self.scripts.retain_mut(|p| {
             let finished = match &mut p.job {
-                ScriptJob::Definition { kind, rx } => match rx.try_recv() {
+                ScriptJob::Definition { kind, rx, mode, syntax } => match rx.try_recv() {
                     Ok(Ok((_, rows))) => {
-                        match rows.first().and_then(|r| r.first().cloned().flatten()) {
-                            Some(def) => done.push((p.info.clone(), explorer::wrap_definition(kind, &def), false)),
+                        let row = rows.first();
+                        let def = row.and_then(|r| r.first().cloned().flatten());
+                        let ty = row.and_then(|r| r.get(1).cloned().flatten()).unwrap_or_default();
+                        match def {
+                            Some(def) => done.push((
+                                p.info.clone(),
+                                scripting::module_script(kind, &def, &ty, *mode, *syntax),
+                                false,
+                            )),
                             None => errors.push("No definition available (encrypted, or no permission).".to_string()),
                         }
                         true
@@ -453,7 +463,7 @@ impl SqlKraftApp {
                     Err(oneshot::error::TryRecvError::Empty) => false,
                     Err(_) => true,
                 },
-                ScriptJob::Table { kind, cols, keys, cols_done, keys_done } => {
+                ScriptJob::Table { kind, mode, syntax, cols, keys, cols_done, keys_done } => {
                     let mut failed = false;
                     if cols_done.is_none() {
                         match cols.try_recv() {
@@ -478,7 +488,14 @@ impl SqlKraftApp {
                         }
                     }
                     if let (Some(c), Some(k)) = (cols_done.as_ref(), keys_done.as_ref()) {
-                        done.push((p.info.clone(), explorer::build_create_table(kind, c, k), false));
+                        let create = explorer::build_create_table(kind, c, k);
+                        let script = match mode {
+                            ScriptMode::DropAndCreate => {
+                                scripting::drop_and_create_table(kind, &create, *syntax).unwrap_or(create)
+                            }
+                            _ => create,
+                        };
+                        done.push((p.info.clone(), script, false));
                         true
                     } else {
                         failed
@@ -646,19 +663,31 @@ impl SqlKraftApp {
                 let rx = s.session.fetch(q);
                 self.scripts.push(PendingScript { info, job: ScriptJob::SelectTop { kind, rx, run } });
             }
-            Action::ScriptCreate { server, kind } => {
+            Action::Script { server, kind, mode } => {
                 let Some(s) = self.servers.get(server) else { return };
                 let info = s.info.with_database(kind.database().unwrap_or_default());
+                let syntax = match &s.facts {
+                    Some(f) => Syntax::for_target(self.settings.script_target, &f.product_version, f.engine_edition),
+                    None => Syntax::for_target(self.settings.script_target, "", 0),
+                };
+                if mode == ScriptMode::Drop {
+                    if let Some(text) = scripting::drop_script(&kind, syntax) {
+                        self.new_query(Some(info), text);
+                    }
+                    return;
+                }
                 let Some(q) = explorer::script_create_query(&kind) else { return };
                 let job = match explorer::script_keys_query(&kind) {
                     Some(kq) => ScriptJob::Table {
                         cols: s.session.fetch(q),
                         keys: s.session.fetch(kq),
                         kind,
+                        mode,
+                        syntax,
                         cols_done: None,
                         keys_done: None,
                     },
-                    None => ScriptJob::Definition { rx: s.session.fetch(q), kind },
+                    None => ScriptJob::Definition { rx: s.session.fetch(q), kind, mode, syntax },
                 };
                 self.scripts.push(PendingScript { info, job });
             }
@@ -931,6 +960,13 @@ impl SqlKraftApp {
                     ui.ctx().set_theme(if self.settings.dark_mode { egui::Theme::Dark } else { egui::Theme::Light });
                     self.settings.save();
                 }
+                ui.menu_button("Script for server version", |ui| {
+                    for t in [ScriptTarget::Connected, ScriptTarget::Modern, ScriptTarget::Legacy] {
+                        if ui.radio_value(&mut self.settings.script_target, t, t.label()).changed() {
+                            self.settings.save();
+                        }
+                    }
+                });
                 ui.horizontal(|ui| {
                     ui.label("Editor font size");
                     if ui.add(egui::DragValue::new(&mut self.settings.editor_font_size).range(8.0..=40.0)).changed() {
@@ -1636,23 +1672,23 @@ fn node_menu(ui: &mut egui::Ui, kind: &NodeKind, server: usize, actions: &mut Ve
             item(ui, "New Query", Action::NewQuery { server, db: Some(db.clone()) });
             item(ui, "Copy name", Action::CopyText(db.clone()));
         }
-        NodeKind::Table { .. } | NodeKind::View { .. } => {
-            item(ui, "Select Top 1000 Rows", Action::SelectTop { server, kind: kind.clone(), run: true });
-            item(ui, "Script as SELECT", Action::SelectTop { server, kind: kind.clone(), run: false });
-            item(ui, "Script as CREATE", Action::ScriptCreate { server, kind: kind.clone() });
-            if let Some(n) = kind.object_name() {
-                item(ui, "Copy name", Action::CopyText(n));
+        NodeKind::Table { .. } | NodeKind::View { .. } | NodeKind::Procedure { .. } | NodeKind::Function { .. } => {
+            let is_table = matches!(kind, NodeKind::Table { .. });
+            if matches!(kind, NodeKind::Table { .. } | NodeKind::View { .. }) {
+                item(ui, "Select Top 1000 Rows", Action::SelectTop { server, kind: kind.clone(), run: true });
+                item(ui, "Script as SELECT", Action::SelectTop { server, kind: kind.clone(), run: false });
             }
-        }
-        NodeKind::Procedure { .. } => {
-            item(ui, "Execute Stored Procedure…", Action::ExecuteProc { server, kind: kind.clone() });
-            item(ui, "Script as CREATE", Action::ScriptCreate { server, kind: kind.clone() });
-            if let Some(n) = kind.object_name() {
-                item(ui, "Copy name", Action::CopyText(n));
+            if matches!(kind, NodeKind::Procedure { .. }) {
+                item(ui, "Execute Stored Procedure…", Action::ExecuteProc { server, kind: kind.clone() });
             }
-        }
-        NodeKind::Function { .. } => {
-            item(ui, "Script as CREATE", Action::ScriptCreate { server, kind: kind.clone() });
+            let mut modes = vec![ScriptMode::Create];
+            if !is_table {
+                modes.push(ScriptMode::Alter);
+            }
+            modes.extend([ScriptMode::Drop, ScriptMode::DropAndCreate]);
+            for mode in modes {
+                item(ui, mode.label(), Action::Script { server, kind: kind.clone(), mode });
+            }
             if let Some(n) = kind.object_name() {
                 item(ui, "Copy name", Action::CopyText(n));
             }
