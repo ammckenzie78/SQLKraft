@@ -7,7 +7,9 @@ mod explorer_panel;
 mod file_dialogs;
 mod query_tab;
 mod results;
+mod runner;
 mod scripts;
+mod shrink_dialog;
 
 use std::time::{Duration, Instant};
 
@@ -68,6 +70,8 @@ enum Action {
     Reconnect(usize),
     CopyText(String),
     ToggleClaudeWrites(usize),
+    /// Tasks → Shrink → Database… (`database`) or Files….
+    Shrink { server: usize, db: String, database: bool },
 }
 
 pub struct SqlKraftApp {
@@ -87,6 +91,7 @@ pub struct SqlKraftApp {
     show_about: bool,
     claude: claude::Claude,
     file_dialogs: Box<dyn FileDialogs>,
+    shrink: Option<shrink_dialog::ShrinkDialog>,
 }
 
 impl SqlKraftApp {
@@ -120,6 +125,7 @@ impl SqlKraftApp {
             show_about: false,
             claude: Default::default(),
             file_dialogs: Box::new(NativeFileDialogs),
+            shrink: None,
         };
         app.sync_claude_bridge();
         app.open_dialog(DialogPurpose::ObjectExplorer, info);
@@ -309,6 +315,7 @@ impl SqlKraftApp {
                     s.claude_writes = !s.claude_writes;
                 }
             }
+            Action::Shrink { server, db, database } => self.open_shrink(server, db, database),
             Action::CopyText(t) => {
                 // handled by the caller with access to ctx
                 let _ = t;
@@ -487,6 +494,7 @@ impl eframe::App for SqlKraftApp {
         self.prompts(&ctx);
         self.about(&ctx);
         self.claude_log_window(&ctx);
+        self.shrink_window(&ctx);
 
         if let Some((msg, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(6) {
