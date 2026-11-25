@@ -84,8 +84,10 @@ jobs:
         shell: pwsh
         run: |
           $exe = "target/release/sqlkraft.exe"
-          & $exe --version
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # A GUI-subsystem exe only runs synchronously when its output is piped.
+          $v = & $exe --version | Out-String
+          if ($v -notmatch '^sqlkraft \d') { throw "unexpected --version output: $v" }
+          $v
           (Get-Item $exe).VersionInfo | Format-List FileDescription, ProductName, FileVersion
 
       - uses: actions/upload-artifact@v7

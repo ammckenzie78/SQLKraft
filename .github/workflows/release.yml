@@ -95,8 +95,10 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          & target/release/sqlkraft.exe --version
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # A GUI-subsystem exe only runs synchronously when its output is piped.
+          $v = & target/release/sqlkraft.exe --version | Out-String
+          if ($v -notmatch "^sqlkraft $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "unexpected --version output: $v" }
+          $v
           New-Item -ItemType Directory dist | Out-Null
           Compress-Archive -Path target/release/sqlkraft.exe, README.md, LICENSE `
             -DestinationPath "dist/sqlkraft-$env:GITHUB_REF_NAME-windows-x64.zip"
