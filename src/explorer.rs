@@ -220,7 +220,7 @@ fn static_children(kind: &NodeKind) -> Option<Vec<Node>> {
 fn children_query(kind: &NodeKind) -> Option<String> {
     Some(match kind {
         NodeKind::DatabasesFolder => {
-            "SELECT name, CASE WHEN database_id <= 4 THEN 1 ELSE 0 END, state_desc \
+            "SELECT name, CASE WHEN database_id <= 4 THEN 1 ELSE 0 END, state_desc, containment \
              FROM sys.databases ORDER BY name"
                 .into()
         }
@@ -288,7 +288,7 @@ fn build_children(kind: &NodeKind, rows: Vec<Vec<Cell>>) -> Vec<Node> {
         NodeKind::SystemDatabasesFolder => rows.iter().map(|r| database_node(r)).collect(),
         NodeKind::LoginsFolder => rows
             .iter()
-            .map(|r| Node::new(format!("{} ({})", s(r, 0), s(r, 1).to_lowercase()), NodeKind::Leaf))
+            .map(|r| Node::new(format!("{} ({})", s(r, 0), s(r, 1).to_lowercase().replace('_', " ")), NodeKind::Leaf))
             .collect(),
         NodeKind::TablesFolder { db } => objects(&rows, |schema, name| NodeKind::Table {
             db: db.clone(),

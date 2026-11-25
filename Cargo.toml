@@ -51,6 +51,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 uuid = "1.29.3"
 
+[dev-dependencies]
+# Live tests name their throwaway databases sqlkraft_test_<uuid>.
+uuid = { version = "1.29.3", features = ["v4"] }
+
 [build-dependencies]
 # build.rs renders the app icon from packaging/sqlkraft.svg.
 resvg = { version = "0.45", default-features = false }
