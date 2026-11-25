@@ -1,6 +1,7 @@
 //! Renders packaging/sqlkraft.svg (the single source for the app icon) into
 //! - `$OUT_DIR/icon-256.rgba`: raw RGBA pixels for the window icon, and
-//! - on Windows, `$OUT_DIR/sqlkraft.ico`, embedded in the .exe with version info.
+//! - on Windows, `$OUT_DIR/sqlkraft.ico`, embedded in the .exe with version info, and
+//! - on macOS, `$OUT_DIR/sqlkraft.icns`, which packaging/macos/build-app.sh copies into SQLKraft.app.
 
 use std::{env, fs, path::PathBuf};
 
@@ -8,6 +9,17 @@ use resvg::{tiny_skia, usvg};
 
 const SVG: &str = "packaging/sqlkraft.svg";
 const ICO_SIZES: [u32; 7] = [16, 20, 24, 32, 48, 64, 256];
+/// PNG entries of an .icns, as iconutil writes them: (OSType, pixel size).
+const ICNS_ENTRIES: [(&[u8; 4], u32); 8] = [
+    (b"ic11", 32),   // 16x16@2x
+    (b"ic12", 64),   // 32x32@2x
+    (b"ic07", 128),  // 128x128
+    (b"ic13", 256),  // 128x128@2x
+    (b"ic08", 256),  // 256x256
+    (b"ic14", 512),  // 256x256@2x
+    (b"ic09", 512),  // 512x512
+    (b"ic10", 1024), // 512x512@2x
+];
 
 fn main() {
     println!("cargo:rerun-if-changed={SVG}");
@@ -48,6 +60,28 @@ fn main() {
         res.set("ProductName", "SQLKraft");
         res.compile().expect("compile Windows resources");
     }
+
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        let entries: Vec<(&[u8; 4], Vec<u8>)> = ICNS_ENTRIES
+            .iter()
+            .map(|&(kind, s)| (kind, render(s).encode_png().expect("encode PNG")))
+            .collect();
+        fs::write(out.join("sqlkraft.icns"), build_icns(&entries)).expect("write .icns");
+    }
+}
+
+/// An Apple .icns whose images are PNGs: a big-endian `icns` header, then (type, length, data).
+fn build_icns(entries: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+    let total = 8 + entries.iter().map(|(_, png)| 8 + png.len()).sum::<usize>();
+    let mut icns = Vec::with_capacity(total);
+    icns.extend_from_slice(b"icns");
+    icns.extend_from_slice(&(total as u32).to_be_bytes());
+    for (kind, png) in entries {
+        icns.extend_from_slice(*kind);
+        icns.extend_from_slice(&(8 + png.len() as u32).to_be_bytes());
+        icns.extend_from_slice(png);
+    }
+    icns
 }
 
 /// An .ico whose images are stored as PNG (supported since Windows Vista).

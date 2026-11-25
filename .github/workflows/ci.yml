@@ -156,3 +156,38 @@ jobs:
           name: sqlkraft-windows-x64
           path: target/release/sqlkraft.exe
           retention-days: 14
+
+  macos:
+    name: macOS arm64
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Check the executable
+        run: |
+          v=$(target/release/sqlkraft --version)
+          echo "$v"
+          case "$v" in "sqlkraft "[0-9]*) ;; *) echo "::error::unexpected --version output: $v"; exit 1 ;; esac
+          otool -L target/release/sqlkraft
+
+      - name: Build SQLKraft.app
+        run: |
+          packaging/macos/build-app.sh
+          plutil -p target/macos/SQLKraft.app/Contents/Info.plist
+          file target/macos/SQLKraft.app/Contents/Resources/sqlkraft.icns
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sqlkraft-macos-arm64
+          path: target/macos/SQLKraft-macos.zip
+          retention-days: 14

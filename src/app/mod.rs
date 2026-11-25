@@ -45,6 +45,12 @@ const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key:
 const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
 const PROPERTIES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F4);
 
+/// A shortcut hint written with "Ctrl+", shown as "Cmd+" on macOS, where `Modifiers::COMMAND`
+/// is the Command key.
+pub(super) fn keys(text: &str) -> String {
+    if cfg!(target_os = "macos") { text.replace("Ctrl+", "Cmd+") } else { text.to_owned() }
+}
+
 // ---------------------------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------------------------
@@ -416,7 +422,7 @@ impl SqlKraftApp {
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("New Query\tCtrl+N").clicked() {
+                if ui.button(keys("New Query\tCtrl+N")).clicked() {
                     self.new_query_default();
                 }
                 if ui.button("Connect Object Explorer…").clicked() {
@@ -424,17 +430,17 @@ impl SqlKraftApp {
                     self.open_dialog(DialogPurpose::ObjectExplorer, info);
                 }
                 ui.separator();
-                if ui.button("Open File…\tCtrl+O").clicked() {
+                if ui.button(keys("Open File…\tCtrl+O")).clicked() {
                     self.open_file();
                 }
                 let has_tab = !self.tabs.is_empty();
-                if ui.add_enabled(has_tab, egui::Button::new("Save\tCtrl+S")).clicked() {
+                if ui.add_enabled(has_tab, egui::Button::new(keys("Save\tCtrl+S"))).clicked() {
                     self.save_tab(self.active, false);
                 }
                 if ui.add_enabled(has_tab, egui::Button::new("Save As…")).clicked() {
                     self.save_tab(self.active, true);
                 }
-                if ui.add_enabled(has_tab, egui::Button::new("Close Tab\tCtrl+W")).clicked() {
+                if ui.add_enabled(has_tab, egui::Button::new(keys("Close Tab\tCtrl+W"))).clicked() {
                     self.request_close_tab(self.active);
                 }
                 ui.separator();
@@ -454,7 +460,7 @@ impl SqlKraftApp {
                     self.change_connection(self.active);
                 }
                 ui.separator();
-                if ui.add_enabled(has_tab, egui::Button::new("Show/Hide Results Pane\tCtrl+R")).clicked() {
+                if ui.add_enabled(has_tab, egui::Button::new(keys("Show/Hide Results Pane\tCtrl+R"))).clicked() {
                     if let Some(t) = self.tabs.get_mut(self.active) {
                         t.show_results = !t.show_results;
                     }

@@ -298,7 +298,7 @@ impl SqlKraftApp {
                     ("Ctrl+= / Ctrl+-", "Editor font size"),
                     ("Ctrl+C in grid", "Copy selected cell"),
                 ] {
-                    ui.monospace(k);
+                    ui.monospace(super::keys(k));
                     ui.label(d);
                     ui.end_row();
                 }

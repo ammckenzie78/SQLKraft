@@ -12,7 +12,7 @@ desktop app, a single binary with no .NET or ODBC, and it runs on Linux, Windows
 - Server names in the usual SSMS forms: `host`, `host,port`, `host\INSTANCE` (through SQL Browser), `tcp:host,port`, `.`
 - SQL Server authentication.
 - Windows authentication using NTLM with `DOMAIN\user` and a password. This also works on Linux.
-- Integrated authentication: SSPI on Windows, or Kerberos on Linux with `--features kerberos`.
+- Integrated authentication: SSPI on Windows, or Kerberos on Linux and macOS with `--features kerberos`.
 - Encryption settings Mandatory, Optional or Off, plus *Trust server certificate*.
 - Remembers recent connections. Passwords are never written to disk.
 
@@ -41,6 +41,10 @@ desktop app, a single binary with no .NET or ODBC, and it runs on Linux, Windows
 - The grid has copy actions (cell, row, column, all with headers) and Ctrl+C. You can export a result set to CSV.
 - You can open and save `.sql` files. You're prompted about unsaved changes when closing a tab or quitting.
 - Dark and light themes, and an adjustable editor font size (Ctrl+= / Ctrl+-).
+
+On macOS, every Ctrl shortcut uses Cmd instead (Cmd+E, Cmd+N, Cmd+S, ...). F5 usually needs the
+**fn** key on a Mac keyboard, so Cmd+E is the easier way to execute; there is no Break key, so
+cancel with Cmd+Shift+C.
 
 ## Installing on Debian / Ubuntu
 
@@ -73,6 +77,27 @@ Download `sqlkraft-vX.Y.Z-windows-x64.zip` from [Releases](https://github.com/am
 extract it, and run `sqlkraft.exe`. It is a single portable executable with no installer.
 The exe is not code-signed, so SmartScreen may warn the first time you run it.
 
+## Installing on macOS
+
+Download `SQLKraft-macos.zip` from [Releases](https://github.com/ammckenzie78/SQLKraft/releases).
+It holds `SQLKraft.app`, a universal app for Apple Silicon and Intel Macs on macOS 11 or later.
+Unzip it and drag `SQLKraft.app` into `/Applications`.
+
+The app is not signed with an Apple Developer ID or notarized, so Gatekeeper blocks the first
+launch of a downloaded copy. Either:
+
+- Control-click (right-click) `SQLKraft.app`, choose **Open**, then **Open** again. On macOS 15
+  (Sequoia) and later, that only shows a warning: open **System Settings → Privacy & Security**,
+  scroll down to the message about SQLKraft and click **Open Anyway**; or
+- remove the quarantine attribute in Terminal:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/SQLKraft.app
+  ```
+
+After that it opens normally. To use `sqlkraft --mcp` (see [Claude Code integration](#claude-code-integration)),
+use the binary inside the bundle: `/Applications/SQLKraft.app/Contents/MacOS/sqlkraft`.
+
 ## Releasing
 
 1. Bump `version` in `Cargo.toml`, then commit.
@@ -83,7 +108,8 @@ The exe is not code-signed, so SmartScreen may warn the first time you run it.
    ```
 
 The [Release workflow](.github/workflows/release.yml) then:
-- builds the `.deb`s and tarballs for amd64 and arm64, and a Windows x64 zip;
+- builds the `.deb`s and tarballs for amd64 and arm64, a Windows x64 zip, and `SQLKraft-macos.zip`
+  (a universal `SQLKraft.app`);
 - creates a GitHub Release with those files and their SHA256 checksums;
 - rebuilds the signed APT repository on GitHub Pages from the five most recent stable releases.
 
@@ -129,6 +155,28 @@ You need the MSVC C++ build tools with a Windows SDK. If you have several Visual
 installs and linking fails with `LNK1104: cannot open file 'msvcrt.lib'`, build from a
 *Developer PowerShell* for a complete install (such as VS 2019 Build Tools), or run
 `vcvars64.bat` first.
+
+### macOS
+
+Install the Xcode Command Line Tools (`xcode-select --install`) and Rust, then:
+
+```sh
+cargo build --release
+./target/release/sqlkraft
+```
+
+To build `SQLKraft.app` (in `target/macos/`, with the icon and `Info.plist`, plus
+`SQLKraft-macos.zip`), run the packaging script. It needs `jq` (`brew install jq`):
+
+```sh
+packaging/macos/build-app.sh                       # this Mac's architecture
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+packaging/macos/build-app.sh aarch64-apple-darwin x86_64-apple-darwin   # universal
+open target/macos/SQLKraft.app
+```
+
+macOS ships GSSAPI, so `--features kerberos` needs no extra libraries; run `kinit` before
+launching to use integrated authentication.
 
 ## Claude Code integration
 
