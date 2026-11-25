@@ -117,7 +117,7 @@ impl Ui {
         std::fs::write(&path, text).unwrap();
         *self.dialogs.open.lock().unwrap() = Some(path.clone());
         self.click("File");
-        self.click("Open File…\tCtrl+O");
+        self.click(&keys("Open File…\tCtrl+O"));
         path
     }
 }
@@ -137,7 +137,7 @@ fn starts_with_no_servers_and_the_connect_dialog() {
     let mut ui = Ui::start(Settings::default());
     assert!(ui.has("Connect to Server"));
     assert!(ui.has("Not connected. Click Connect to add a server."));
-    assert!(ui.has("Press Ctrl+N or click “New Query” to open a query window."));
+    assert!(ui.has(&keys("Press Ctrl+N or click “New Query” to open a query window.")));
 
     ui.click("Cancel");
     assert!(!ui.has("Connect to Server"));
@@ -147,7 +147,7 @@ fn starts_with_no_servers_and_the_connect_dialog() {
     assert!(ui.has("Connect to Server"));
     ui.click("Cancel");
     assert!(!ui.has("Connect to Server"));
-    assert!(ui.has("Press Ctrl+N or click “New Query” to open a query window."));
+    assert!(ui.has(&keys("Press Ctrl+N or click “New Query” to open a query window.")));
 }
 
 #[test]
@@ -294,4 +294,9 @@ fn live_connect_and_script_procedure_as_create() {
     // `CREATE OR ALTER PROCEDURE` on SQL Server 2016 SP1+, `CREATE PROCEDURE` before.
     assert!(text.contains("CREATE") && text.contains("PROCEDURE dbo.GetCustomer"), "{text}");
     assert!(text.contains(&format!("USE [{}]", fixture.db)), "{text}");
+}
+
+/// Shortcut labels say Cmd+ on macOS, like the app's own `keys` helper.
+fn keys(text: &str) -> String {
+    if cfg!(target_os = "macos") { text.replace("Ctrl+", "Cmd+") } else { text.to_owned() }
 }
