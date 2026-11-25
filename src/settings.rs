@@ -28,6 +28,8 @@ pub struct Settings {
     pub dir: Option<PathBuf>,
     /// Server-side folders recently used in the backup file browser, per server name.
     pub recent_folders: std::collections::BTreeMap<String, Vec<String>>,
+    /// The Properties pane (F4) is open.
+    pub show_properties: bool,
 }
 
 impl Default for Settings {
@@ -42,6 +44,7 @@ impl Default for Settings {
             completion_auto_popup: true,
             dir: None,
             recent_folders: Default::default(),
+            show_properties: false,
         }
     }
 }
