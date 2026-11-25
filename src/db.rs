@@ -538,10 +538,19 @@ async fn run_batches(
                 // Tell the server to stop, and wait for its acknowledgement so the connection
                 // is back in sync.
                 let ack = tokio::time::timeout(Duration::from_secs(10), client.cancel_query()).await;
-                if !matches!(ack, Ok(Ok(()))) {
-                    healthy = false;
-                }
+                let lost = match ack {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some(e.to_string()),
+                    Err(_) => Some("the server did not acknowledge the cancel within 10 seconds".to_string()),
+                };
                 out.send(Event::Message(Message::error("Query was cancelled by user.")));
+                if let Some(why) = lost {
+                    healthy = false;
+                    out.send(Event::Message(Message::error(format!(
+                        "The connection had to be reset after the cancel ({why}). Temp tables, \
+                         the current database, SET options and open transactions were lost."
+                    ))));
+                }
                 break 'batches;
             }
             if outcome.broken {

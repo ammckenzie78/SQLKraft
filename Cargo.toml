@@ -67,6 +67,12 @@ tiberius = { version = "0.13.0", default-features = false, features = ["tds73", 
 # sspi-rs gives NTLM "Windows authentication" (DOMAIN\user + password) on Linux without system libs.
 tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls", "chrono", "rust_decimal", "sql-browser-tokio", "sspi-rs"] }
 
+[patch.crates-io]
+# tiberius 0.13.0 with a fix for query cancellation: it gave up waiting for the Attention
+# acknowledgement at the end of the first response message, so every cancel dropped the
+# connection. See vendor/tiberius/SQLKRAFT-PATCHES.md.
+tiberius = { path = "vendor/tiberius" }
+
 [profile.release]
 lto = "thin"
 strip = true
