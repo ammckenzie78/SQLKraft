@@ -20,6 +20,8 @@ pub struct Settings {
     pub script_target: ScriptTarget,
     /// Let `sqlkraft --mcp` (Claude Code) use this window's connections.
     pub claude_bridge: bool,
+    /// Show the completion list while typing (Ctrl+Space always shows it).
+    pub completion_auto_popup: bool,
     /// The directory these settings load from and save to; `None` means [`config_dir`]. Tests
     /// point it at a temp dir so they never touch the user's real settings.
     #[serde(skip)]
@@ -37,6 +39,7 @@ impl Default for Settings {
             max_rows_per_result: 1_000_000,
             script_target: ScriptTarget::Connected,
             claude_bridge: true,
+            completion_auto_popup: true,
             dir: None,
             recent_folders: Default::default(),
         }

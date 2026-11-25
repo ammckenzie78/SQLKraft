@@ -2,6 +2,7 @@
 
 mod backup_dialog;
 mod claude;
+mod completion_popup;
 mod dialogs;
 mod editor;
 mod explorer_panel;
@@ -106,6 +107,8 @@ pub struct SqlKraftApp {
     shrink: Option<shrink_dialog::ShrinkDialog>,
     backup: Option<backup_dialog::BackupDialog>,
     restore: Option<restore_dialog::RestoreDialog>,
+    /// Schema metadata for completion, per (connection, database).
+    meta: completion_popup::MetaCache,
 }
 
 impl SqlKraftApp {
@@ -142,6 +145,7 @@ impl SqlKraftApp {
             shrink: None,
             backup: None,
             restore: None,
+            meta: Default::default(),
         };
         app.sync_claude_bridge();
         app.open_dialog(DialogPurpose::ObjectExplorer, info);
@@ -229,9 +233,11 @@ impl SqlKraftApp {
             while let Ok(ev) = session.events.try_recv() {
                 events.push(ev);
             }
+            let finished = events.iter().any(|e| matches!(e, Event::ExecFinished { .. }));
             for ev in events {
                 apply_tab_event(tab, ev, max_rows);
             }
+            self.meta.track(tab, finished);
             if let Some(rx) = &mut tab.databases_rx {
                 match rx.try_recv() {
                     Ok(Ok((_, rows))) => {
@@ -251,6 +257,7 @@ impl SqlKraftApp {
             }
         }
 
+        self.meta.poll();
         self.pump_scripts();
         self.pump_claude();
     }
@@ -474,6 +481,7 @@ impl SqlKraftApp {
                         self.settings.save();
                     }
                 });
+                self.completion_menu(ui);
             });
             self.claude_menu(ui);
             ui.menu_button("Help", |ui| {
@@ -494,6 +502,7 @@ impl eframe::App for SqlKraftApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.pump();
+        self.completion_shortcuts(&ctx);
         self.shortcuts(&ctx);
 
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_quit && self.tabs.iter().any(|t| t.dirty()) {

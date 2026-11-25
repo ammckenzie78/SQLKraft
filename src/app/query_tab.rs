@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Align, Color32, Layout, RichText, text::LayoutJob};
 use tokio::sync::oneshot;
 
+use super::completion_popup::CompletionState;
 use super::dialogs::{DialogPurpose, Prompt};
 use super::editor::editor;
 use super::results::{ResultGrid, ResultView, results_pane};
@@ -48,6 +49,7 @@ pub(super) struct QueryTab {
     pub(super) grid_has_focus: bool,
     pub(super) highlight_cache: Option<(u64, f32, bool, LayoutJob)>,
     pub(super) focus_editor: bool,
+    pub(super) completion: CompletionState,
 }
 
 impl QueryTab {
@@ -76,6 +78,7 @@ impl QueryTab {
             grid_has_focus: false,
             highlight_cache: None,
             focus_editor: true,
+            completion: CompletionState::default(),
         }
     }
 
@@ -143,6 +146,7 @@ impl SqlKraftApp {
         }
         let Some(session) = tab.session.as_mut() else { return };
         session.execute(batches);
+        tab.completion.ran_ddl = crate::completion::has_ddl(&text);
         tab.results.clear();
         tab.messages.clear();
         tab.selected_cell = None;
@@ -323,6 +327,7 @@ impl SqlKraftApp {
         }
         ui.separator();
         let font_size = self.settings.editor_font_size;
+        let auto_popup = self.settings.completion_auto_popup;
         let dark = ui.visuals().dark_mode;
         let a = self.active.min(self.tabs.len() - 1);
         self.active = a;
@@ -346,7 +351,7 @@ impl SqlKraftApp {
                 });
         }
 
-        egui::CentralPanel::default_margins().show(ui, |ui| editor(ui, tab, font_size, dark));
+        egui::CentralPanel::default_margins().show(ui, |ui| editor(ui, tab, font_size, dark, &mut self.meta, auto_popup));
 
         if export {
             self.export_csv(a);
