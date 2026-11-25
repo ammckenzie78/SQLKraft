@@ -102,6 +102,11 @@ impl Headless {
     }
 }
 
+fn is_deadlock(e: &anyhow::Error) -> bool {
+    let text = format!("{e:#}");
+    text.contains("Msg 1205,") || text.contains("code: 1205") || text.contains("deadlock victim")
+}
+
 /// `server (login)`, the name tools use for a connection.
 pub fn connection_name(info: &ConnectionInfo) -> String {
     format!("{} ({})", info.server, info.display_user())
@@ -126,13 +131,23 @@ impl Backend for Headless {
 
     fn fetch(&mut self, connection: &str, sql: &str) -> anyhow::Result<Vec<Vec<Cell>>> {
         let rt = self.rt.handle().clone();
-        let open = self.session(connection)?;
-        let rx = open.session.fetch(sql);
-        let reply = rt
-            .block_on(async { tokio::time::timeout(QUERY_TIMEOUT, rx).await })
-            .map_err(|_| anyhow!("Query timed out"))?
-            .context("Connection closed")?;
-        Ok(reply?.1)
+        // Catalog reads can lose a deadlock to concurrent CREATE/DROP DATABASE (error 1205);
+        // they change nothing, so retrying is safe.
+        for attempt in 1.. {
+            let open = self.session(connection)?;
+            let rx = open.session.fetch(sql);
+            let reply = rt
+                .block_on(async { tokio::time::timeout(QUERY_TIMEOUT, rx).await })
+                .map_err(|_| anyhow!("Query timed out"))?
+                .context("Connection closed")?;
+            match reply {
+                Err(e) if attempt < 4 && is_deadlock(&e) => {
+                    std::thread::sleep(Duration::from_millis(100 * attempt));
+                }
+                r => return Ok(r?.1),
+            }
+        }
+        unreachable!()
     }
 
     fn execute(&mut self, connection: &str, database: Option<&str>, batches: Vec<Batch>, max_rows: usize) -> anyhow::Result<ExecOutput> {
