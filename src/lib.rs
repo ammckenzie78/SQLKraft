@@ -6,5 +6,6 @@ pub mod db;
 pub mod explorer;
 pub mod icons;
 pub mod scripting;
+pub mod properties;
 pub mod settings;
 pub mod sql;
