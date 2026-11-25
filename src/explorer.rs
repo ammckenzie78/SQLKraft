@@ -80,11 +80,45 @@ pub enum Children {
     Failed(String),
 }
 
+/// Status overlay drawn on a node's icon, like the small badges in SSMS's Object Explorer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Badge {
+    #[default]
+    None,
+    /// Database is OFFLINE (or OFFLINE_SECONDARY).
+    Offline,
+    /// Database is RESTORING.
+    Restoring,
+    /// Database is SUSPECT, EMERGENCY, RECOVERY_PENDING or RECOVERING.
+    Warning,
+    /// Database has partial containment; on a server, contained database authentication is on.
+    Contained,
+}
+
+impl Badge {
+    /// Badge for a `sys.databases` row: state wins over containment.
+    pub fn for_database(state_desc: &str, containment: &str) -> Badge {
+        match state_desc {
+            "" | "ONLINE" => {
+                if containment == "1" {
+                    Badge::Contained
+                } else {
+                    Badge::None
+                }
+            }
+            "OFFLINE" | "OFFLINE_SECONDARY" => Badge::Offline,
+            "RESTORING" => Badge::Restoring,
+            _ => Badge::Warning,
+        }
+    }
+}
+
 pub struct Node {
     pub label: String,
     pub kind: NodeKind,
     pub children: Children,
     pub id: u64,
+    pub badge: Badge,
 }
 
 impl Node {
@@ -94,7 +128,7 @@ impl Node {
         } else {
             Children::NotLoaded
         };
-        Self { label: label.into(), kind, children, id: next_id() }
+        Self { label: label.into(), kind, children, id: next_id(), badge: Badge::None }
     }
 
     fn folder(label: &str, kind: NodeKind) -> Self {
@@ -191,7 +225,7 @@ fn children_query(kind: &NodeKind) -> Option<String> {
                 .into()
         }
         NodeKind::SystemDatabasesFolder => {
-            "SELECT name, 1, state_desc FROM sys.databases WHERE database_id <= 4 ORDER BY name".into()
+            "SELECT name, 1, state_desc, containment FROM sys.databases WHERE database_id <= 4 ORDER BY name".into()
         }
         NodeKind::LoginsFolder => {
             "SELECT name, type_desc FROM sys.server_principals \
@@ -329,6 +363,7 @@ fn database_node(r: &[Cell]) -> Node {
         format!("{name} ({})", state.to_lowercase())
     };
     let mut n = Node::new(label, NodeKind::Database { db: name });
+    n.badge = Badge::for_database(&state, &s(r, 3));
     if !(state.is_empty() || state == "ONLINE") {
         n.children = Children::Loaded(Vec::new());
     }
@@ -502,6 +537,16 @@ pub fn execute_proc_script(kind: &NodeKind) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn database_badges() {
+        assert_eq!(Badge::for_database("ONLINE", "0"), Badge::None);
+        assert_eq!(Badge::for_database("ONLINE", "1"), Badge::Contained);
+        assert_eq!(Badge::for_database("OFFLINE", "1"), Badge::Offline);
+        assert_eq!(Badge::for_database("RESTORING", "0"), Badge::Restoring);
+        assert_eq!(Badge::for_database("SUSPECT", "0"), Badge::Warning);
+        assert_eq!(Badge::for_database("RECOVERY_PENDING", "0"), Badge::Warning);
+    }
 
     #[test]
     fn types() {

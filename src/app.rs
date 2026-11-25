@@ -15,6 +15,7 @@ use crate::db::{
     Repaint, ServerFacts, Session,
 };
 use crate::explorer::{self, Children, Node, NodeKind};
+use crate::icons;
 use crate::settings::Settings;
 use crate::sql::{self, Tok};
 
@@ -881,6 +882,10 @@ impl SqlKraftApp {
                     _ => format!("{} (disconnected)", server.info.server),
                 };
                 server.root.label = label;
+                server.root.badge = match &server.facts {
+                    Some(f) if f.contained_auth => explorer::Badge::Contained,
+                    _ => explorer::Badge::None,
+                };
                 if let ConnState::Failed(e) = &server.state {
                     ui.colored_label(Color32::from_rgb(220, 80, 80), e);
                 }
@@ -1315,9 +1320,16 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
         node.ensure_loading(session);
     }
     let kind = node.kind.clone();
-    let label = format!("{icon} {}", node.label);
+    let badge = node.badge;
+    let painted = icons::is_painted(&kind);
+    let label = if painted { node.label.clone() } else { format!("{icon} {}", node.label) };
     let header = state.show_header(ui, |ui| {
+        let icon_r = painted.then(|| icons::show(ui, &kind, badge));
         let r = ui.add(egui::Label::new(label).sense(egui::Sense::click()).selectable(false));
+        let r = match icon_r {
+            Some(i) => r.union(i),
+            None => r,
+        };
         if r.double_clicked() {
             match &kind {
                 NodeKind::Table { .. } | NodeKind::View { .. } => {
