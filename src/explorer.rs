@@ -410,9 +410,12 @@ pub fn script_create_query(kind: &NodeKind) -> Option<String> {
     let db = kind.database()?;
     let full = format!("{}.{}", quote_ident(db), kind.object_name()?);
     match kind {
+        // OBJECT_DEFINITION resolves the id in the session's current database (usually master
+        // for the explorer connection), so read the target database's sys.sql_modules instead.
         NodeKind::View { .. } | NodeKind::Procedure { .. } | NodeKind::Function { .. } => Some(format!(
-            "SELECT OBJECT_DEFINITION(OBJECT_ID({}))",
-            quote_literal(&full)
+            "SELECT m.definition FROM {d}.sys.sql_modules m WHERE m.object_id = OBJECT_ID({lit})",
+            d = quote_ident(db),
+            lit = quote_literal(&full)
         )),
         NodeKind::Table { .. } => Some(format!(
             "DECLARE @oid int = OBJECT_ID({lit});\n\
@@ -546,6 +549,15 @@ mod tests {
         assert_eq!(Badge::for_database("RESTORING", "0"), Badge::Restoring);
         assert_eq!(Badge::for_database("SUSPECT", "0"), Badge::Warning);
         assert_eq!(Badge::for_database("RECOVERY_PENDING", "0"), Badge::Warning);
+    }
+
+    #[test]
+    fn script_proc_reads_target_database_modules() {
+        let kind = NodeKind::Procedure { db: "shop".into(), schema: "dbo".into(), name: "GetOrders".into() };
+        let q = script_create_query(&kind).unwrap();
+        assert!(q.contains("[shop].sys.sql_modules"), "{q}");
+        assert!(q.contains("OBJECT_ID(N'[shop].[dbo].[GetOrders]')") || q.contains("OBJECT_ID('[shop].[dbo].[GetOrders]')"), "{q}");
+        assert!(!q.contains("OBJECT_DEFINITION"), "{q}");
     }
 
     #[test]
