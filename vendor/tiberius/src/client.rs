@@ -294,6 +294,26 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Client<S> {
         Ok(result)
     }
 
+    /// SQLKraft patch: the first half of [`simple_query`](Self::simple_query). Sends the batch
+    /// and returns once it is on the wire, so a caller can let the send finish before racing
+    /// the response against a cancel; a send dropped half-way poisons the connection.
+    pub async fn send_batch(&mut self, query: &str) -> crate::Result<()> {
+        self.connection.flush_stream().await?;
+        let req = BatchRequest::new(query, self.connection.context().transaction_descriptor());
+        let id = self.connection.context_mut().next_packet_id();
+        self.connection.send(PacketHeader::batch(id), req).await?;
+        Ok(())
+    }
+
+    /// SQLKraft patch: the second half of [`simple_query`](Self::simple_query), reading the
+    /// response to a batch sent with [`send_batch`](Self::send_batch).
+    pub async fn batch_results(&mut self) -> crate::Result<QueryStream<'_>> {
+        let ts = TokenStream::new(&mut self.connection);
+        let mut result = QueryStream::new(ts.try_unfold());
+        result.forward_to_metadata().await?;
+        Ok(result)
+    }
+
     /// Execute a `BULK INSERT` statement, efficiently storing a large number of
     /// rows to a specified table. Note: make sure the input row follows the same
     /// schema as the table, otherwise calling `send()` will return an error.

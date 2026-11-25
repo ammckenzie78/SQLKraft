@@ -21,3 +21,10 @@ The patch keeps reading messages, up to 64, until the acknowledgement arrives. S
 errors raised by the cancelled request are skipped while draining.
 
 Drop this patch once upstream tiberius handles it.
+
+## 2. `Client::send_batch` / `Client::batch_results`
+
+`src/client.rs`. `simple_query` split into its two halves: sending the batch, then reading the
+response. SQLKraft awaits the send without racing it against a cancel, because a send dropped
+half-way leaves the connection poisoned, and races only the response. Purely additive;
+`simple_query` is unchanged.
