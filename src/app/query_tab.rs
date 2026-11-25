@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 use super::dialogs::{DialogPurpose, Prompt};
 use super::editor::editor;
 use super::results::{ResultGrid, ResultView, results_pane};
-use super::{ConnState, SqlKraftApp};
+use super::{ConnState, SqlKraftApp, keys};
 use crate::db::{ConnectionInfo, Event, FetchResult, Message, Repaint, ServerFacts, Session};
 use crate::sql;
 
@@ -224,13 +224,13 @@ impl SqlKraftApp {
 
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("📝 New Query").on_hover_text("Ctrl+N").clicked() {
+            if ui.button("📝 New Query").on_hover_text(keys("Ctrl+N")).clicked() {
                 self.new_query_default();
             }
-            if ui.button("📂").on_hover_text("Open file (Ctrl+O)").clicked() {
+            if ui.button("📂").on_hover_text(keys("Open file (Ctrl+O)")).clicked() {
                 self.open_file();
             }
-            if ui.add_enabled(!self.tabs.is_empty(), egui::Button::new("💾")).on_hover_text("Save (Ctrl+S)").clicked() {
+            if ui.add_enabled(!self.tabs.is_empty(), egui::Button::new("💾")).on_hover_text(keys("Save (Ctrl+S)")).clicked() {
                 self.save_tab(self.active, false);
             }
             ui.separator();
@@ -256,14 +256,14 @@ impl SqlKraftApp {
             let running = tab.status == ExecStatus::Running;
             if ui
                 .add_enabled(!running, egui::Button::new(RichText::new("▶ Execute").color(Color32::from_rgb(60, 170, 60))))
-                .on_hover_text("F5 / Ctrl+E — runs the selection if there is one")
+                .on_hover_text(keys("F5 / Ctrl+E — runs the selection if there is one"))
                 .clicked()
             {
                 self.execute_tab(a, false);
             }
             if ui
                 .add_enabled(running, egui::Button::new(RichText::new("■ Cancel").color(Color32::from_rgb(200, 60, 60))))
-                .on_hover_text("Alt+Break / Ctrl+Shift+C")
+                .on_hover_text(keys("Alt+Break / Ctrl+Shift+C"))
                 .clicked()
             {
                 self.cancel_tab(a);
@@ -312,7 +312,7 @@ impl SqlKraftApp {
     pub(super) fn query_area(&mut self, ui: &mut egui::Ui) {
         if self.tabs.is_empty() {
             ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("Press Ctrl+N or click “New Query” to open a query window.").weak());
+                ui.label(RichText::new(keys("Press Ctrl+N or click “New Query” to open a query window.")).weak());
             });
             return;
         }

@@ -1,8 +1,8 @@
 name: Release
 
 # Push a tag like v0.2.0 (matching the version in Cargo.toml) to publish a release:
-#   1. build .deb packages for amd64 and arm64, and a Windows x64 zip
-#   2. create a GitHub Release with the packages, plain binaries and Windows zip attached
+#   1. build .deb packages for amd64 and arm64, a Windows x64 zip and a universal macOS app zip
+#   2. create a GitHub Release with the packages, plain binaries and Windows/macOS zips attached
 #   3. rebuild the signed APT repository on GitHub Pages from the latest releases
 #
 # The APT step needs a repository secret APT_GPG_PRIVATE_KEY (ASCII-armoured private key)
@@ -108,9 +108,53 @@ jobs:
           name: dist-windows-x64
           path: dist/*
 
+  build-macos:
+    if: github.event_name == 'push'
+    name: Build macos-universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Add the Intel target
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Test
+        run: cargo test --locked
+
+      # One universal binary (Apple Silicon + Intel, joined with lipo) in an ad-hoc signed .app.
+      #
+      # Not signed with a Developer ID or notarized, so Gatekeeper asks before the first launch
+      # (the README documents the workaround). Signing would need an Apple Developer account and
+      # these repository secrets, then `codesign --options runtime --timestamp --sign "Developer
+      # ID Application: ..."` in place of the ad-hoc signature in build-app.sh, followed by
+      # `xcrun notarytool submit --wait` and `xcrun stapler staple` on the .app before zipping:
+      #   MACOS_CERTIFICATE_P12     base64 Developer ID Application certificate (.p12)
+      #   MACOS_CERTIFICATE_PASSWORD  password of that .p12 (imported into a temporary keychain)
+      #   MACOS_SIGNING_IDENTITY    e.g. "Developer ID Application: Name (TEAMID)"
+      #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD  (app-specific password) for notarytool,
+      #   or an App Store Connect API key (APPLE_API_KEY_P8, APPLE_API_KEY_ID, APPLE_API_ISSUER).
+      - name: Build SQLKraft.app
+        run: packaging/macos/build-app.sh aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Package
+        run: |
+          v=$(target/macos/SQLKraft.app/Contents/MacOS/sqlkraft --version)
+          if [ "$v" != "sqlkraft ${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::unexpected --version output: $v"
+            exit 1
+          fi
+          lipo target/macos/SQLKraft.app/Contents/MacOS/sqlkraft -verify_arch arm64 x86_64
+          mkdir dist
+          cp target/macos/SQLKraft-macos.zip dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-macos-universal
+          path: dist/*
+
   release:
     name: GitHub Release
-    needs: [build, build-windows]
+    needs: [build, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
