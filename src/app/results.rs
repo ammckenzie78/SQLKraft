@@ -124,7 +124,10 @@ fn grids_view(ui: &mut egui::Ui, tab: &mut QueryTab) {
                         format!("Showing first {} rows (limit set in View menu).", grid.rows.len()),
                     );
                 }
-                result_grid(ui, gi, grid, selected, &mut clicked, &mut copy, per_grid - 10.0);
+                // Tables don't scroll sideways on their own; wide result sets need this.
+                egui::ScrollArea::horizontal().id_salt(("grid-h", gi)).auto_shrink(false).show(ui, |ui| {
+                    result_grid(ui, gi, grid, selected, &mut clicked, &mut copy, per_grid - 24.0);
+                });
             });
             if n > 1 {
                 ui.separator();
