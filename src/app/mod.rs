@@ -5,6 +5,7 @@ mod dialogs;
 mod editor;
 mod explorer_panel;
 mod file_dialogs;
+mod properties_pane;
 mod query_tab;
 mod results;
 mod runner;
@@ -23,6 +24,7 @@ use crate::settings::Settings;
 
 use dialogs::{ConnectDialog, DialogPurpose, Prompt};
 use query_tab::{QueryTab, apply_tab_event};
+use properties_pane::{PropsView, Selection};
 use scripts::{PendingScript, ScriptJob};
 
 pub use file_dialogs::{FileDialogs, NativeFileDialogs};
@@ -38,6 +40,7 @@ const CLOSE_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Ke
 const TOGGLE_RESULTS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::R);
 const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals);
 const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
+const PROPERTIES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F4);
 
 // ---------------------------------------------------------------------------------------------
 // State
@@ -72,6 +75,8 @@ enum Action {
     ToggleClaudeWrites(usize),
     /// Tasks → Shrink → Database… (`database`) or Files….
     Shrink { server: usize, db: String, database: bool },
+    /// Select a node; `show` also opens the Properties pane.
+    Select { server: usize, node: u64, kind: NodeKind, name: String, show: bool },
 }
 
 pub struct SqlKraftApp {
@@ -92,6 +97,8 @@ pub struct SqlKraftApp {
     claude: claude::Claude,
     file_dialogs: Box<dyn FileDialogs>,
     shrink: Option<shrink_dialog::ShrinkDialog>,
+    selection: Option<Selection>,
+    props: Option<PropsView>,
 }
 
 impl SqlKraftApp {
@@ -126,6 +133,8 @@ impl SqlKraftApp {
             claude: Default::default(),
             file_dialogs: Box::new(NativeFileDialogs),
             shrink: None,
+            selection: None,
+            props: None,
         };
         app.sync_claude_bridge();
         app.open_dialog(DialogPurpose::ObjectExplorer, info);
@@ -301,9 +310,15 @@ impl SqlKraftApp {
             Action::Disconnect(i) => {
                 if i < self.servers.len() {
                     self.servers.remove(i);
+                    // Server indexes after `i` shift down, so drop the selection rather than
+                    // point it at the wrong server.
+                    self.selection = None;
                 }
             }
             Action::Reconnect(i) => {
+                if self.selection.as_ref().is_some_and(|s| s.server == i) {
+                    self.selection = None;
+                }
                 if let Some(s) = self.servers.get_mut(i) {
                     s.session = Session::spawn(&self.rt, s.info.clone(), self.repaint.clone());
                     s.state = ConnState::Connecting;
@@ -320,6 +335,12 @@ impl SqlKraftApp {
                 // handled by the caller with access to ctx
                 let _ = t;
             }
+            Action::Select { server, node, kind, name, show } => {
+                self.selection = Some(Selection { server, node, kind, name });
+                if show && !self.settings.show_properties {
+                    self.toggle_properties();
+                }
+            }
         }
     }
 
@@ -328,7 +349,7 @@ impl SqlKraftApp {
     // -----------------------------------------------------------------------------------------
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let (exec, cancel, new_q, open, save, close, toggle, zin, zout) = ctx.input_mut(|i| {
+        let (exec, cancel, new_q, open, save, close, toggle, zin, zout, props) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&EXECUTE) | i.consume_shortcut(&EXECUTE_ALT),
                 i.consume_shortcut(&CANCEL) | i.consume_shortcut(&CANCEL_ALT),
@@ -339,10 +360,14 @@ impl SqlKraftApp {
                 i.consume_shortcut(&TOGGLE_RESULTS),
                 i.consume_shortcut(&ZOOM_IN),
                 i.consume_shortcut(&ZOOM_OUT),
+                i.consume_shortcut(&PROPERTIES),
             )
         });
         if self.dialog.is_some() {
             return;
+        }
+        if props {
+            self.toggle_properties();
         }
         let a = self.active;
         if exec {
@@ -430,6 +455,11 @@ impl SqlKraftApp {
                 }
             });
             ui.menu_button("View", |ui| {
+                let mut shown = self.settings.show_properties;
+                if ui.checkbox(&mut shown, "Properties Window\tF4").changed() {
+                    self.toggle_properties();
+                }
+                ui.separator();
                 if ui.checkbox(&mut self.settings.dark_mode, "Dark theme").changed() {
                     ui.ctx().set_theme(if self.settings.dark_mode { egui::Theme::Dark } else { egui::Theme::Light });
                     self.settings.save();
@@ -488,6 +518,11 @@ impl eframe::App for SqlKraftApp {
             self.toolbar(ui);
         });
         egui::Panel::left("explorer").resizable(true).default_size(300.0).show(ui, |ui| self.object_explorer(ui));
+        self.sync_properties();
+        self.pump_properties();
+        if self.settings.show_properties {
+            egui::Panel::right("properties").resizable(true).default_size(300.0).show(ui, |ui| self.properties_pane(ui));
+        }
         egui::CentralPanel::default_margins().show(ui, |ui| self.query_area(ui));
 
         self.connect_dialog(&ctx);

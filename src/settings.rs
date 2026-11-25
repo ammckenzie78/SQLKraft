@@ -24,6 +24,8 @@ pub struct Settings {
     /// point it at a temp dir so they never touch the user's real settings.
     #[serde(skip)]
     pub dir: Option<PathBuf>,
+    /// The Properties pane (F4) is open.
+    pub show_properties: bool,
 }
 
 impl Default for Settings {
@@ -36,6 +38,7 @@ impl Default for Settings {
             script_target: ScriptTarget::Connected,
             claude_bridge: true,
             dir: None,
+            show_properties: false,
         }
     }
 }
