@@ -71,19 +71,13 @@ SELECT DB_NAME() AS db\n";
 
 /// Every Properties-pane query runs and returns a row, using objects that ship in msdb.
 #[test]
-#[ignore]
 fn properties_queries() {
     use sqlkraft::explorer::NodeKind;
     use sqlkraft::properties;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let s = Session::spawn(rt.handle(), info(), std::sync::Arc::new(|| {}));
-    let ev = collect(&s, |e| matches!(e, Event::Connected(_) | Event::ConnectFailed(_)), Duration::from_secs(20));
-    assert!(matches!(ev.last(), Some(Event::Connected(_))), "connect failed: {ev:?}");
-
+    let f = Fixture::empty(live_or_skip!());
     let one = |sql: &str| -> Vec<String> {
-        let (_, rows) = rt.block_on(s.fetch(sql)).unwrap().unwrap();
-        rows.into_iter().next().unwrap_or_default().into_iter().map(|c| c.unwrap_or_default()).collect()
+        f.fetch(sql).into_iter().next().unwrap_or_default().into_iter().map(|c| c.unwrap_or_default()).collect()
     };
     let first = |ty: &str| -> (String, String) {
         let r = one(&format!(
@@ -117,7 +111,7 @@ fn properties_queries() {
     }
     for kind in kinds {
         let q = properties::query(&kind).unwrap();
-        let (_, rows) = rt.block_on(s.fetch(q.sql.clone())).unwrap().unwrap_or_else(|e| panic!("{kind:?}: {e:#}\n{}", q.sql));
+        let rows = f.try_fetch(&q.sql).unwrap_or_else(|e| panic!("{kind:?}: {e:#}\n{}", q.sql));
         let props = q.parse(&rows).unwrap_or_else(|e| panic!("{kind:?}: {e}"));
         println!("--- {kind:?}");
         for p in &props {
