@@ -185,9 +185,14 @@ fn grids_view(ui: &mut egui::Ui, tab: &mut QueryTab) {
                         format!("Showing first {} rows (limit set in View menu).", grid.rows.len()),
                     );
                 }
-                // Tables don't scroll sideways on their own; wide result sets need this.
-                egui::ScrollArea::horizontal().id_salt(("grid-h", gi)).auto_shrink(false).show(ui, |ui| {
-                    result_grid(ui, gi, grid, reset_widths, selected, &mut clicked, &mut copy, per_grid - 24.0);
+                // Tables don't scroll sideways on their own; wide result sets need this. egui's
+                // default scroll bars float and only show on hover, which hides the fact that a
+                // grid has more columns, so the grid's bars are solid and drawn when needed.
+                ui.scope(|ui| {
+                    ui.spacing_mut().scroll = egui::style::ScrollStyle { bar_width: 10.0, ..egui::style::ScrollStyle::solid() };
+                    egui::ScrollArea::horizontal().id_salt(("grid-h", gi)).auto_shrink(false).show(ui, |ui| {
+                        result_grid(ui, gi, grid, reset_widths, selected, &mut clicked, &mut copy, per_grid - 28.0);
+                    });
                 });
             });
             if n > 1 {
