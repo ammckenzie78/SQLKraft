@@ -43,7 +43,7 @@ impl SqlKraftApp {
                 if let ConnState::Failed(e) = &server.state {
                     ui.colored_label(Color32::from_rgb(220, 80, 80), e);
                 }
-                show_node(ui, &mut server.root, &server.session, si, &mut actions);
+                show_node(ui, &mut server.root, &server.session, si, server.claude_writes, &mut actions);
             }
         });
         for a in actions {
@@ -59,7 +59,7 @@ impl SqlKraftApp {
 // Widgets
 // ---------------------------------------------------------------------------------------------
 
-fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usize, actions: &mut Vec<Action>) {
+fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usize, claude_writes: bool, actions: &mut Vec<Action>) {
     let icon = node.kind.icon();
     if node.is_leaf() {
         ui.horizontal(|ui| {
@@ -117,13 +117,13 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
                 ui.weak("(empty)");
             }
             for c in children {
-                show_node(ui, c, session, server, actions);
+                show_node(ui, c, session, server, claude_writes, actions);
             }
         }
     });
     let header_label = header_inner.inner;
     header_label.context_menu(|ui| {
-        node_menu(ui, &kind, server, actions, &refresh);
+        node_menu(ui, &kind, server, claude_writes, actions, &refresh);
     });
     if header_label.clicked() {
         // Click on the label toggles, like a tree view.
@@ -136,7 +136,14 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
     }
 }
 
-fn node_menu(ui: &mut egui::Ui, kind: &NodeKind, server: usize, actions: &mut Vec<Action>, refresh: &std::cell::Cell<bool>) {
+fn node_menu(
+    ui: &mut egui::Ui,
+    kind: &NodeKind,
+    server: usize,
+    claude_writes: bool,
+    actions: &mut Vec<Action>,
+    refresh: &std::cell::Cell<bool>,
+) {
     let mut item = |ui: &mut egui::Ui, label: &str, action: Action| {
         if ui.button(label).clicked() {
             actions.push(action);
@@ -148,6 +155,9 @@ fn node_menu(ui: &mut egui::Ui, kind: &NodeKind, server: usize, actions: &mut Ve
             item(ui, "New Query", Action::NewQuery { server, db: None });
             item(ui, "Reconnect", Action::Reconnect(server));
             item(ui, "Disconnect", Action::Disconnect(server));
+            ui.separator();
+            let label = if claude_writes { "✔ Allow Claude to modify data" } else { "Allow Claude to modify data" };
+            item(ui, label, Action::ToggleClaudeWrites(server));
         }
         NodeKind::Database { db } => {
             item(ui, "New Query", Action::NewQuery { server, db: Some(db.clone()) });

@@ -130,6 +130,86 @@ fn run_query_can_write_when_allowed() {
     assert_eq!(rows[0][0].as_deref(), Some("3"));
 }
 
+/// The window side of `sqlkraft --mcp`: token check, then tools answered with the window's
+/// connections and editor.
+#[test]
+fn window_bridge_serves_tools() {
+    use sqlkraft::mcp::ActiveQuery;
+    use sqlkraft::mcp::bridge::{Bridge, GuiCall, GuiConnection};
+    use std::io::{BufRead, BufReader, Write};
+
+    let f = Fixture::new(live_or_skip!());
+    let dir = std::env::temp_dir().join(format!("sqlkraft-bridge-test-{}", std::process::id()));
+    // SAFETY: no other test in this binary reads the environment concurrently with this write.
+    unsafe { std::env::set_var("SQLKRAFT_CONFIG_DIR", &dir) };
+    let (bridge, calls) = Bridge::start(std::sync::Arc::new(|| {})).unwrap();
+
+    // A stand-in for the UI thread.
+    let info = f.info.clone();
+    let db = f.db.clone();
+    let ui = std::thread::spawn(move || {
+        let mut logged = Vec::new();
+        while let Ok(call) = calls.recv() {
+            match call {
+                GuiCall::Connections(reply) => {
+                    let _ = reply.send(vec![GuiConnection { name: "gui".into(), info: info.clone(), writes_allowed: false }]);
+                }
+                GuiCall::ActiveQuery(reply) => {
+                    let _ = reply.send(Some(ActiveQuery {
+                        title: "SQLQuery1.sql".into(), connection: Some("gui".into()), database: Some(db.clone()),
+                        text: "SELECT 1".into(), selection: None,
+                    }));
+                }
+                GuiCall::Log { tool, .. } => logged.push(tool),
+                GuiCall::ClientDisconnected => break,
+                _ => {}
+            }
+        }
+        logged
+    });
+
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("mcp-bridge.json")).unwrap()).unwrap();
+    let port = file["port"].as_u64().unwrap() as u16;
+    let token = file["token"].as_str().unwrap().to_string();
+
+    // A wrong token gets no "ok".
+    let bad = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    (&bad).write_all(b"nope\n").unwrap();
+    let mut line = String::new();
+    BufReader::new(&bad).read_line(&mut line).unwrap();
+    assert_eq!(line, "", "a bad token must be refused");
+
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut w = stream.try_clone().unwrap();
+    let mut r = BufReader::new(stream);
+    w.write_all(format!("{token}\n").as_bytes()).unwrap();
+    line.clear();
+    r.read_line(&mut line).unwrap();
+    assert_eq!(line.trim(), "ok");
+
+    let mut call = |id: u64, name: &str, args: Value| -> Value {
+        let msg = json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": name, "arguments": args } });
+        w.write_all(format!("{msg}\n").as_bytes()).unwrap();
+        let mut line = String::new();
+        r.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["result"]["isError"], false, "{name}: {reply}");
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+    };
+    assert_eq!(call(1, "list_connections", json!({}))[0]["name"], "gui");
+    let out = call(2, "run_query", json!({ "connection": "gui", "database": f.db, "sql": "SELECT COUNT(*) FROM dbo.Customers" }));
+    assert_eq!(out["result_sets"][0]["rows"], json!([["2"]]));
+    assert_eq!(call(3, "get_active_query", json!({}))["text"], "SELECT 1");
+
+    drop(w);
+    drop(r);
+    let logged = ui.join().unwrap();
+    assert_eq!(logged, ["list_connections", "run_query", "get_active_query"]);
+    drop(bridge);
+    assert!(!dir.join("mcp-bridge.json").exists(), "bridge file removed on drop");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn stdio_transport_round_trip() {
     let f = Fixture::new(live_or_skip!());

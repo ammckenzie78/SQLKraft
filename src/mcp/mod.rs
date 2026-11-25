@@ -12,6 +12,7 @@
 //! ([`guard`]), result sizes are capped, and credentials never pass through MCP; tools refer to
 //! connections by name.
 
+pub mod bridge;
 pub mod guard;
 pub mod headless;
 pub mod tools;

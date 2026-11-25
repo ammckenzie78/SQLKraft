@@ -63,6 +63,16 @@ impl Headless {
         Self::new(conns)
     }
 
+    /// Replaces the connection list, closing sessions whose settings changed or went away.
+    pub fn set_connections(&mut self, conns: Vec<Connection>) {
+        self.open.retain(|name, _| {
+            let old = self.conns.iter().find(|c| &c.name == name).map(|c| &c.info);
+            let new = conns.iter().find(|c| &c.name == name).map(|c| &c.info);
+            old.is_some() && old == new
+        });
+        self.conns = conns;
+    }
+
     fn session(&mut self, name: &str) -> anyhow::Result<&mut Open> {
         if !self.open.contains_key(name) {
             let conn = self

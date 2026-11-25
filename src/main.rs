@@ -16,6 +16,10 @@ fn main() -> eframe::Result {
     }
     if std::env::args().any(|a| a == "--mcp") {
         // MCP server on stdio for Claude Code: `claude mcp add sqlkraft -- sqlkraft --mcp`.
+        // Use the running window's connections when there is one; otherwise connect directly.
+        if sqlkraft::mcp::bridge::proxy_to_window() {
+            return Ok(());
+        }
         let settings = sqlkraft::settings::Settings::load();
         let mut backend = sqlkraft::mcp::headless::Headless::from_settings(&settings);
         let stdin = std::io::stdin().lock();
