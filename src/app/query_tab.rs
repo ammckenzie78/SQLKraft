@@ -380,22 +380,15 @@ pub(super) fn apply_tab_event(tab: &mut QueryTab, ev: Event, max_rows: usize) {
             tab.started = Some(Instant::now());
         }
         Event::ResultSet(columns) => {
-            let widths = columns.iter().map(|c| (c.name.chars().count() as f32 * 8.0 + 24.0).clamp(60.0, 300.0)).collect();
-            tab.results.push(ResultGrid { columns, rows: Vec::new(), widths, truncated: false });
+            // Column widths are measured from the data when the grid is drawn.
+            tab.results.push(ResultGrid::new(columns));
         }
         Event::Rows(rows) => {
             if let Some(grid) = tab.results.last_mut() {
-                let sizing = grid.rows.len() < 100;
                 for r in rows {
                     if grid.rows.len() >= max_rows.max(1) {
                         grid.truncated = true;
                         break;
-                    }
-                    if sizing {
-                        for (w, c) in grid.widths.iter_mut().zip(&r) {
-                            let len = c.as_deref().map(|s| s.chars().take(60).count()).unwrap_or(4);
-                            *w = w.max((len as f32 * 7.5 + 16.0).clamp(60.0, 420.0));
-                        }
                     }
                     grid.rows.push(r);
                 }

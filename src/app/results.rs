@@ -10,8 +10,66 @@ use crate::db::{Cell, ColumnMeta, MsgKind};
 pub(super) struct ResultGrid {
     pub(super) columns: Vec<ColumnMeta>,
     pub(super) rows: Vec<Vec<Cell>>,
+    /// Column widths measured from the header and the first [`SIZE_SAMPLE`] rows.
     pub(super) widths: Vec<f32>,
     pub(super) truncated: bool,
+    /// How many rows have been measured into `widths`; `None` until the header has been.
+    sized_rows: Option<usize>,
+    /// `widths` grew since the table last used them, so the table must drop its stored widths.
+    widths_changed: bool,
+}
+
+/// Rows measured to size columns. Later rows don't change widths (or a user's resizing).
+const SIZE_SAMPLE: usize = 500;
+/// Auto-sized columns stay within this range; drag a column edge to go wider.
+const MIN_COL: f32 = 40.0;
+const MAX_COL: f32 = 400.0;
+/// Text past this many characters doesn't count towards a column's width.
+const MEASURE_CHARS: usize = 120;
+
+impl ResultGrid {
+    pub(super) fn new(columns: Vec<ColumnMeta>) -> Self {
+        let widths = vec![MIN_COL; columns.len()];
+        Self { columns, rows: Vec::new(), widths, truncated: false, sized_rows: None, widths_changed: true }
+    }
+
+    /// Measures the header and any not-yet-measured sample rows with the grid's fonts, so each
+    /// column fits its data (within [`MIN_COL`]..=[`MAX_COL`]).
+    fn size_columns(&mut self, ui: &egui::Ui) {
+        let target = self.rows.len().min(SIZE_SAMPLE);
+        if self.sized_rows == Some(target) {
+            return;
+        }
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let color = ui.visuals().text_color();
+        let pad = ui.spacing().item_spacing.x * 2.0 + 8.0;
+        let measure = |text: &str| -> f32 {
+            let shown: String = text.chars().take(MEASURE_CHARS).map(|c| if c.is_control() { ' ' } else { c }).collect();
+            ui.painter().layout_no_wrap(shown, body.clone(), color).size().x + pad
+        };
+        let start = match self.sized_rows {
+            Some(n) => n,
+            None => {
+                for (w, c) in self.widths.iter_mut().zip(&self.columns) {
+                    let name = if c.name.is_empty() { "(No column name)" } else { &c.name };
+                    // Headers are bold; allow a little extra.
+                    *w = (measure(name) * 1.08).clamp(MIN_COL, MAX_COL);
+                }
+                self.widths_changed = true;
+                0
+            }
+        };
+        for row in &self.rows[start..target] {
+            for (w, cell) in self.widths.iter_mut().zip(row) {
+                let need = measure(cell.as_deref().unwrap_or("NULL")).clamp(MIN_COL, MAX_COL);
+                if need > *w + 0.5 {
+                    *w = need;
+                    self.widths_changed = true;
+                }
+            }
+        }
+        self.sized_rows = Some(target);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -115,7 +173,10 @@ fn grids_view(ui: &mut egui::Ui, tab: &mut QueryTab) {
     let tab_id = tab.id;
 
     egui::ScrollArea::vertical().id_salt(("grids", tab_id)).auto_shrink(false).show(ui, |ui| {
-        for (gi, grid) in tab.results.iter().enumerate() {
+        for (gi, grid) in tab.results.iter_mut().enumerate() {
+            grid.size_columns(ui);
+            let reset_widths = std::mem::take(&mut grid.widths_changed);
+            let grid = &*grid;
             ui.push_id(("grid", gi), |ui| {
                 ui.set_height(per_grid - 6.0);
                 if grid.truncated {
@@ -126,7 +187,7 @@ fn grids_view(ui: &mut egui::Ui, tab: &mut QueryTab) {
                 }
                 // Tables don't scroll sideways on their own; wide result sets need this.
                 egui::ScrollArea::horizontal().id_salt(("grid-h", gi)).auto_shrink(false).show(ui, |ui| {
-                    result_grid(ui, gi, grid, selected, &mut clicked, &mut copy, per_grid - 24.0);
+                    result_grid(ui, gi, grid, reset_widths, selected, &mut clicked, &mut copy, per_grid - 24.0);
                 });
             });
             if n > 1 {
@@ -147,6 +208,7 @@ fn result_grid(
     ui: &mut egui::Ui,
     gi: usize,
     grid: &ResultGrid,
+    reset_widths: bool,
     selected: Option<(usize, usize, usize)>,
     clicked: &mut Option<(usize, usize, usize)>,
     copy: &mut Option<String>,
@@ -169,6 +231,11 @@ fn result_grid(
         .column(Column::exact(num_w));
     for w in &grid.widths {
         tb = tb.column(Column::initial(*w).at_least(30.0).clip(true));
+    }
+    // The table keeps its column widths between frames (and runs). Drop them whenever the
+    // measured widths changed, i.e. a new result set or more sample rows arrived.
+    if reset_widths {
+        tb.reset();
     }
     tb.header(row_h + 2.0, |mut header| {
         header.col(|_| {});

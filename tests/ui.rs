@@ -360,6 +360,50 @@ fn live_wide_results_scroll_horizontally() {
     assert!(x <= 1400.0, "could not scroll to the last column: its right edge is at x = {x}");
 }
 
+/// Columns size themselves to their data (within limits), and a new run in the same tab
+/// re-sizes them instead of keeping the previous result set's widths.
+#[test]
+fn live_columns_auto_size_to_data() {
+    let info = live_or_skip!();
+    let mut ui = Ui::start(Settings::default());
+    connect_via_dialog(&mut ui, &info);
+    ui.click("📝 New Query");
+
+    // `marker` is text that only the new result set contains.
+    let run = |ui: &mut Ui, sql: &str, marker: &str| {
+        ui.harness.get_by_role(Role::MultilineTextInput).set_text_value_accesskit(sql);
+        ui.harness.run_ok();
+        ui.harness.key_press(egui::Key::F5);
+        ui.wait_until("the result grid", Duration::from_secs(30), |ui| {
+            ui.harness.query(By::new().predicate(|n| text_of(n).is_some_and(|t| t.contains(marker)))).is_some()
+        });
+        for _ in 0..5 {
+            ui.harness.step();
+        }
+    };
+    // Column widths from the left edges of consecutive header labels.
+    let widths = |ui: &Ui, names: &[&str]| -> Vec<f32> {
+        let xs: Vec<f32> = names.iter().map(|n| ui.harness.get_by_label(n).rect().min.x).collect();
+        xs.windows(2).map(|w| w[1] - w[0]).collect()
+    };
+
+    run(
+        &mut ui,
+        "SELECT 7 AS n1, 'abcdefghijklmnopqrstuvwxyz0123' AS t30, REPLICATE('x', 2000) AS huge, 1 AS z",
+        "abcdefghijklmnopqrstuvwxyz0123",
+    );
+    let w = widths(&ui, &["n1", "t30", "huge", "z"]);
+    assert!(w[0] < 90.0, "a one-digit column stays narrow: {w:?}");
+    assert!((150.0..330.0).contains(&w[1]), "30 characters fit, without lots of slack: {w:?}");
+    assert!((380.0..440.0).contains(&w[2]), "very long text is capped at the maximum: {w:?}");
+
+    // Same tab, new data: the first column is now wide, and must grow.
+    run(&mut ui, "SELECT REPLICATE('y', 45) AS n1, 7 AS t30, 1 AS huge, 1 AS z", "yyyyyyyyyy");
+    let w = widths(&ui, &["n1", "t30", "huge", "z"]);
+    assert!(w[0] > 250.0, "the first column re-sized for the new data: {w:?}");
+    assert!(w[2] < 90.0, "the capped column shrank back for one-digit data: {w:?}");
+}
+
 /// Shortcut labels say Cmd+ on macOS, like the app's own `keys` helper.
 fn keys(text: &str) -> String {
     if cfg!(target_os = "macos") { text.replace("Ctrl+", "Cmd+") } else { text.to_owned() }
