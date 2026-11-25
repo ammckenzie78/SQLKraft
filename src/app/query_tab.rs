@@ -162,8 +162,7 @@ impl SqlKraftApp {
     }
 
     pub(super) fn open_file(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("SQL files", &["sql"]).add_filter("All files", &["*"]).pick_file()
-        else {
+        let Some(path) = self.file_dialogs.open_sql() else {
             return;
         };
         match std::fs::read_to_string(&path) {
@@ -184,7 +183,7 @@ impl SqlKraftApp {
         let Some(tab) = self.tabs.get_mut(idx) else { return false };
         let path = match (&tab.path, save_as) {
             (Some(p), false) => p.clone(),
-            _ => match rfd::FileDialog::new().add_filter("SQL files", &["sql"]).set_file_name(&tab.title).save_file() {
+            _ => match self.file_dialogs.save_sql(&tab.title) {
                 Some(p) => p,
                 None => return false,
             },

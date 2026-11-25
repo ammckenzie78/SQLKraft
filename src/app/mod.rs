@@ -4,6 +4,7 @@ mod claude;
 mod dialogs;
 mod editor;
 mod explorer_panel;
+mod file_dialogs;
 mod properties_pane;
 mod query_tab;
 mod results;
@@ -23,6 +24,8 @@ use dialogs::{ConnectDialog, DialogPurpose, Prompt};
 use query_tab::{QueryTab, apply_tab_event};
 use properties_pane::{PropsView, Selection};
 use scripts::{PendingScript, ScriptJob};
+
+pub use file_dialogs::{FileDialogs, NativeFileDialogs};
 
 const EXECUTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F5);
 const EXECUTE_ALT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::E);
@@ -88,16 +91,24 @@ pub struct SqlKraftApp {
     toast: Option<(String, Instant)>,
     show_about: bool,
     claude: claude::Claude,
+    file_dialogs: Box<dyn FileDialogs>,
     selection: Option<Selection>,
     props: Option<PropsView>,
 }
 
 impl SqlKraftApp {
     pub fn new(cc: &eframe::CreationContext<'_>, rt: tokio::runtime::Handle) -> Self {
-        let ctx = cc.egui_ctx.clone();
-        let repaint: Repaint = std::sync::Arc::new(move || ctx.request_repaint());
-        let settings = Settings::load();
-        cc.egui_ctx.set_theme(if settings.dark_mode { egui::Theme::Dark } else { egui::Theme::Light });
+        Self::with_settings(&cc.egui_ctx, rt, Settings::load())
+    }
+
+    /// The app on `ctx` with the given settings (tests pass settings with a temp `dir`), showing
+    /// the connect dialog.
+    pub fn with_settings(ctx: &egui::Context, rt: tokio::runtime::Handle, settings: Settings) -> Self {
+        let repaint: Repaint = {
+            let ctx = ctx.clone();
+            std::sync::Arc::new(move || ctx.request_repaint())
+        };
+        ctx.set_theme(if settings.dark_mode { egui::Theme::Dark } else { egui::Theme::Light });
         let info = settings.recent.first().cloned().unwrap_or_default();
         let mut app = Self {
             rt,
@@ -115,12 +126,18 @@ impl SqlKraftApp {
             toast: None,
             show_about: false,
             claude: Default::default(),
+            file_dialogs: Box::new(NativeFileDialogs),
             selection: None,
             props: None,
         };
         app.sync_claude_bridge();
         app.open_dialog(DialogPurpose::ObjectExplorer, info);
         app
+    }
+
+    /// Replaces the native Open / Save dialogs (tests use a stub).
+    pub fn set_file_dialogs(&mut self, dialogs: impl FileDialogs + 'static) {
+        self.file_dialogs = Box::new(dialogs);
     }
 
     fn toast(&mut self, msg: impl Into<String>) {

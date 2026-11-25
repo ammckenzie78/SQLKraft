@@ -25,7 +25,7 @@ impl SqlKraftApp {
         let Some(tab) = self.tabs.get(idx) else { return };
         let grid_idx = tab.selected_cell.map(|c| c.0).unwrap_or(0);
         let Some(grid) = tab.results.get(grid_idx) else { return };
-        let Some(path) = rfd::FileDialog::new().add_filter("CSV", &["csv"]).set_file_name("results.csv").save_file() else {
+        let Some(path) = self.file_dialogs.save_csv("results.csv") else {
             return;
         };
         let result = (|| -> anyhow::Result<()> {
