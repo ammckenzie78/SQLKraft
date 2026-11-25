@@ -20,6 +20,8 @@ pub struct Settings {
     pub script_target: ScriptTarget,
     /// Let `sqlkraft --mcp` (Claude Code) use this window's connections.
     pub claude_bridge: bool,
+    /// The Properties pane (F4) is open.
+    pub show_properties: bool,
 }
 
 impl Default for Settings {
@@ -31,6 +33,7 @@ impl Default for Settings {
             max_rows_per_result: 1_000_000,
             script_target: ScriptTarget::Connected,
             claude_bridge: true,
+            show_properties: false,
         }
     }
 }
