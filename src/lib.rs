@@ -3,6 +3,7 @@
 pub mod app;
 pub mod backup;
 pub mod capture;
+pub mod completion;
 pub mod db;
 pub mod explorer;
 pub mod icons;

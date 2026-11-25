@@ -120,6 +120,28 @@ impl Ui {
         self.click(&keys("Open File…\tCtrl+O"));
         path
     }
+
+    /// Fills in and submits the connect dialog; returns the start of the server node's label.
+    fn connect(&mut self, info: &sqlkraft::db::ConnectionInfo) -> String {
+        // The fields have no accessible names, so find them by what they hold (the defaults
+        // are `localhost` / `sa`) and by role.
+        let field = |value: &'static str| By::new().role(Role::TextInput).value(value);
+        self.harness.get(field("localhost")).set_text_value_accesskit(&info.server);
+        self.harness.run_ok();
+        self.harness.get(field("sa")).set_text_value_accesskit(&info.user);
+        self.harness.run_ok();
+        self.harness.get_by_role(Role::PasswordInput).set_text_value_accesskit(&info.password);
+        self.harness.run_ok();
+        self.harness.get_by_label("Connect").click();
+        self.harness.step();
+
+        let connected = format!("{} (SQL Server", info.server);
+        self.wait_until("the server to connect", Duration::from_secs(30), |ui| {
+            ui.harness.query_by_label_contains(&connected).is_some()
+        });
+        assert!(!self.has("Connect to Server"));
+        connected
+    }
 }
 
 /// A node's visible text: AccessKit keeps a `Role::Label`'s text in its value.
@@ -245,24 +267,7 @@ fn live_connect_and_script_procedure_as_create() {
     let info = live_or_skip!();
     let fixture = common::Fixture::new(info.clone());
     let mut ui = Ui::start(Settings::default());
-
-    // Fill in the connect dialog. The fields have no accessible names, so find them by what
-    // they hold (the defaults are `localhost` / `sa`) and by role.
-    let field = |value: &'static str| By::new().role(Role::TextInput).value(value);
-    ui.harness.get(field("localhost")).set_text_value_accesskit(&info.server);
-    ui.harness.run_ok();
-    ui.harness.get(field("sa")).set_text_value_accesskit(&info.user);
-    ui.harness.run_ok();
-    ui.harness.get_by_role(Role::PasswordInput).set_text_value_accesskit(&info.password);
-    ui.harness.run_ok();
-    ui.harness.get_by_label("Connect").click();
-    ui.harness.step();
-
-    let connected = format!("{} (SQL Server", info.server);
-    ui.wait_until("the server to connect", Duration::from_secs(30), |ui| {
-        ui.harness.query_by_label_contains(&connected).is_some()
-    });
-    assert!(!ui.has("Connect to Server"));
+    let connected = ui.connect(&info);
 
     // New Query now reuses the connection.
     ui.click("📝 New Query");
@@ -319,27 +324,12 @@ fn results_pane_keeps_its_height_when_empty() {
     assert!(top < 650.0, "results pane collapsed: its top edge is at y = {top}");
 }
 
-/// Fills in the connect dialog shown at start-up and waits for Object Explorer to connect.
-fn connect_via_dialog(ui: &mut Ui, info: &sqlkraft::db::ConnectionInfo) {
-    let field = |value: &'static str| By::new().role(Role::TextInput).value(value);
-    ui.harness.get(field("localhost")).set_text_value_accesskit(&info.server);
-    ui.harness.run_ok();
-    ui.harness.get(field("sa")).set_text_value_accesskit(&info.user);
-    ui.harness.run_ok();
-    ui.harness.get_by_role(Role::PasswordInput).set_text_value_accesskit(&info.password);
-    ui.harness.run_ok();
-    ui.harness.get_by_label("Connect").click();
-    ui.harness.step();
-    let connected = format!("{} (SQL Server", info.server);
-    ui.wait_until("the server to connect", Duration::from_secs(30), |ui| ui.harness.query_by_label_contains(&connected).is_some());
-}
-
 /// A result set wider than the window can be scrolled sideways to its last column.
 #[test]
 fn live_wide_results_scroll_horizontally() {
     let info = live_or_skip!();
     let mut ui = Ui::start(Settings::default());
-    connect_via_dialog(&mut ui, &info);
+    ui.connect(&info);
     ui.click("📝 New Query");
     let cols: Vec<String> = (1..=40).map(|i| format!("{i} AS [a_fairly_long_column_name_{i:02}]")).collect();
     ui.harness.get_by_role(Role::MultilineTextInput).set_text_value_accesskit(&format!("SELECT {}", cols.join(", ")));
@@ -366,7 +356,7 @@ fn live_wide_results_scroll_horizontally() {
 fn live_columns_auto_size_to_data() {
     let info = live_or_skip!();
     let mut ui = Ui::start(Settings::default());
-    connect_via_dialog(&mut ui, &info);
+    ui.connect(&info);
     ui.click("📝 New Query");
 
     // `marker` is text that only the new result set contains.
@@ -402,6 +392,123 @@ fn live_columns_auto_size_to_data() {
     let w = widths(&ui, &["n1", "t30", "huge", "z"]);
     assert!(w[0] > 250.0, "the first column re-sized for the new data: {w:?}");
     assert!(w[2] < 90.0, "the capped column shrank back for one-digit data: {w:?}");
+}
+
+/// Keywords are offered without a connection; Enter accepts, but on a word already typed out
+/// it is a new line; with the auto-popup turned off only Ctrl+Space shows the list.
+#[test]
+fn completion_offers_keywords_and_can_be_turned_off() {
+    let mut ui = Ui::start(Settings::default());
+    ui.click("Cancel");
+    ui.open_file("kw.sql", "");
+    ui.harness.get_by_role(Role::MultilineTextInput).focus();
+    ui.harness.run_ok();
+    ui.harness.get_by_role(Role::MultilineTextInput).type_text("Sel");
+    ui.harness.run_ok();
+    assert!(ui.harness.query(suggestion("SELECT keyword")).is_some(), "typing two letters opens the list");
+    ui.harness.key_press(egui::Key::Enter);
+    ui.harness.run_ok();
+    assert_eq!(ui.editor_text(), "SELECT");
+
+    ui.harness.get_by_role(Role::MultilineTextInput).type_text(" 1 GO");
+    ui.harness.run_ok();
+    assert!(ui.harness.query(suggestion("GO keyword")).is_some());
+    ui.harness.key_press(egui::Key::Enter);
+    ui.harness.run_ok();
+    assert_eq!(ui.editor_text(), "SELECT 1 GO\n", "Enter after a complete word is a new line");
+    assert!(ui.harness.query(By::new().role(Role::ListBoxOption)).is_none());
+
+    ui.click("View");
+    ui.click("Show completion list while typing");
+    let saved = std::fs::read_to_string(ui.dir.0.join("settings.json")).unwrap();
+    assert!(saved.contains("\"completion_auto_popup\": false"), "{saved}");
+    ui.harness.key_press(egui::Key::Escape);
+    ui.harness.run_ok();
+    ui.harness.get_by_role(Role::MultilineTextInput).focus();
+    ui.harness.run_ok();
+    ui.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::End);
+    ui.harness.get_by_role(Role::MultilineTextInput).type_text("PRIN");
+    ui.harness.run_ok();
+    assert!(ui.harness.query(By::new().role(Role::ListBoxOption)).is_none(), "no list while typing");
+    ui.harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Space);
+    ui.harness.run_ok();
+    assert!(ui.harness.query(suggestion("PRINT keyword")).is_some(), "Ctrl+Space still shows it");
+    ui.harness.key_press(egui::Key::Tab);
+    ui.harness.run_ok();
+    assert_eq!(ui.editor_text(), "SELECT 1 GO\nPRINT");
+}
+
+/// A completion list row whose accessible label (`name kind detail`) starts with `start`.
+fn suggestion(start: &str) -> By<'_> {
+    By::new().role(Role::ListBoxOption).predicate(move |n| n.label().is_some_and(|l| l.starts_with(start)))
+}
+
+/// Completion in a query on the fixture database: `dbo.Cu` offers Customers and Tab accepts
+/// it; `c.` after `FROM dbo.Customers c` offers its columns (Esc closes the list, Ctrl+Space
+/// brings it back, Enter accepts).
+#[test]
+fn live_completion_offers_tables_and_alias_columns() {
+    let info = live_or_skip!();
+    let fixture = common::Fixture::new(info.clone());
+    let mut ui = Ui::start(Settings::default());
+    let connected = ui.connect(&info);
+
+    // Server > Databases > (fixture db) > New Query.
+    let server_label = text_of(&ui.harness.get_by_label_contains(&connected).accesskit_node()).unwrap();
+    for step in [server_label.as_str(), "Databases"] {
+        let what = format!("tree node {step}");
+        ui.wait_until(&what, Duration::from_secs(30), |ui| ui.harness.query(tree_label(step)).is_some());
+        ui.harness.get(tree_label(step)).scroll_to_me();
+        ui.harness.run_ok();
+        ui.harness.get(tree_label(step)).click();
+        ui.harness.run_ok();
+    }
+    let db = fixture.db.as_str();
+    ui.wait_until("the fixture database node", Duration::from_secs(30), |ui| ui.harness.query(tree_label(db)).is_some());
+    ui.harness.get(tree_label(db)).scroll_to_me();
+    ui.harness.run_ok();
+    ui.harness.get(tree_label(db)).click_secondary();
+    ui.harness.run_ok();
+    ui.click("New Query");
+    let in_db = format!(".{db} (");
+    ui.wait_until("the query tab to connect", Duration::from_secs(30), |ui| ui.harness.query_by_label_contains(&in_db).is_some());
+
+    ui.harness.get_by_role(Role::MultilineTextInput).focus();
+    ui.harness.run_ok();
+    ui.harness.get_by_role(Role::MultilineTextInput).type_text("SELECT * FROM dbo.Cu");
+    ui.harness.run_ok();
+    ui.wait_until("Customers to be offered", Duration::from_secs(30), |ui| ui.harness.query(suggestion("Customers table dbo")).is_some());
+    assert!(ui.harness.query(suggestion("ActiveCustomers")).is_none(), "only names matching Cu");
+    ui.harness.key_press(egui::Key::Tab);
+    ui.harness.run_ok();
+    assert_eq!(ui.editor_text(), "SELECT * FROM dbo.Customers");
+    assert!(ui.harness.query(By::new().role(Role::ListBoxOption)).is_none(), "accepting closes the list");
+
+    // Replace the text, put the caret after `SELECT ` and type `c.`.
+    ui.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    ui.harness.get_by_role(Role::MultilineTextInput).type_text("SELECT  FROM dbo.Customers c");
+    ui.harness.run_ok();
+    ui.harness.key_press(egui::Key::Home);
+    for _ in 0.."SELECT ".len() {
+        ui.harness.key_press(egui::Key::ArrowRight);
+    }
+    ui.harness.run_ok();
+    ui.harness.get_by_role(Role::MultilineTextInput).type_text("c.");
+    ui.harness.run_ok();
+    ui.wait_until("the columns of c", Duration::from_secs(30), |ui| ui.harness.query(suggestion("Balance column")).is_some());
+    for col in ["Id column int", "Name column nvarchar(100)", "Email column", "CreatedAt column", "Notes column", "Shout column"] {
+        assert!(ui.harness.query(suggestion(col)).is_some(), "{col} offered");
+    }
+
+    ui.harness.key_press(egui::Key::Escape);
+    ui.harness.run_ok();
+    assert!(ui.harness.query(By::new().role(Role::ListBoxOption)).is_none(), "Esc closes the list");
+    ui.harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Space);
+    ui.harness.run_ok();
+    assert!(ui.harness.query(suggestion("Balance column")).is_some(), "Ctrl+Space reopens it");
+    ui.harness.key_press(egui::Key::Enter);
+    ui.harness.run_ok();
+    assert_eq!(ui.editor_text(), "SELECT c.Balance FROM dbo.Customers c");
 }
 
 /// Shortcut labels say Cmd+ on macOS, like the app's own `keys` helper.
