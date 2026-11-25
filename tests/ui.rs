@@ -296,6 +296,29 @@ fn live_connect_and_script_procedure_as_create() {
     assert!(text.contains(&format!("USE [{}]", fixture.db)), "{text}");
 }
 
+/// The results pane keeps its height while it has little to show (e.g. the moment a query
+/// starts and the old results are cleared). It used to shrink to its content and stay small.
+#[test]
+fn results_pane_keeps_its_height_when_empty() {
+    let mut ui = Ui::start(Settings::default());
+    ui.click("Cancel");
+    ui.open_file("q.sql", "SELECT 1");
+    // Show the (empty) results pane, let a few frames settle, then hide and show it again.
+    for _ in 0..2 {
+        ui.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+        for _ in 0..5 {
+            ui.harness.step();
+        }
+    }
+    ui.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+    for _ in 0..5 {
+        ui.harness.step();
+    }
+    let top = ui.harness.get_by_label_contains("Results (").rect().min.y;
+    // The window is 900 px high; the pane starts at roughly 45% of the editor area, not a sliver.
+    assert!(top < 650.0, "results pane collapsed: its top edge is at y = {top}");
+}
+
 /// Shortcut labels say Cmd+ on macOS, like the app's own `keys` helper.
 fn keys(text: &str) -> String {
     if cfg!(target_os = "macos") { text.replace("Ctrl+", "Cmd+") } else { text.to_owned() }

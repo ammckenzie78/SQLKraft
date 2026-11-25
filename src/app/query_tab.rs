@@ -338,6 +338,10 @@ impl SqlKraftApp {
                 .default_size(ui.available_height() * 0.45)
                 .size_range(80.0..=ui.available_height() - 60.0)
                 .show(ui, |ui| {
+                    // egui stores a panel's size from what its content used, so fill the panel:
+                    // otherwise it shrinks to a sliver whenever the pane is nearly empty (as at
+                    // the start of every run) and stays that small.
+                    ui.set_min_height(ui.available_height());
                     export = results_pane(ui, tab);
                 });
         }
