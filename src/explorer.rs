@@ -22,8 +22,12 @@ pub enum NodeKind {
     Function { db: String, schema: String, name: String, table_valued: bool },
     ColumnsFolder { db: String, object_id: String },
     IndexesFolder { db: String, object_id: String },
+    /// `object_id` is the same `OBJECT_ID(N'...')` expression as the parent folder's.
+    Column { db: String, object_id: String, name: String },
+    Index { db: String, object_id: String, name: String },
     SecurityFolder,
     LoginsFolder,
+    Login { name: String },
     Leaf,
 }
 
@@ -36,9 +40,14 @@ impl NodeKind {
             NodeKind::View { .. } => "👁",
             NodeKind::Procedure { .. } => "⚙",
             NodeKind::Function { .. } => "ƒ",
-            NodeKind::Leaf => "•",
+            NodeKind::Column { .. } | NodeKind::Index { .. } | NodeKind::Login { .. } | NodeKind::Leaf => "•",
             _ => "📁",
         }
+    }
+
+    /// Nodes that never have children.
+    pub fn is_leaf(&self) -> bool {
+        matches!(self, NodeKind::Column { .. } | NodeKind::Index { .. } | NodeKind::Login { .. } | NodeKind::Leaf)
     }
 
     pub fn database(&self) -> Option<&str> {
@@ -54,7 +63,9 @@ impl NodeKind {
             | NodeKind::Procedure { db, .. }
             | NodeKind::Function { db, .. }
             | NodeKind::ColumnsFolder { db, .. }
-            | NodeKind::IndexesFolder { db, .. } => Some(db),
+            | NodeKind::IndexesFolder { db, .. }
+            | NodeKind::Column { db, .. }
+            | NodeKind::Index { db, .. } => Some(db),
             _ => None,
         }
     }
@@ -123,7 +134,7 @@ pub struct Node {
 
 impl Node {
     pub fn new(label: impl Into<String>, kind: NodeKind) -> Self {
-        let children = if kind == NodeKind::Leaf {
+        let children = if kind.is_leaf() {
             Children::Loaded(Vec::new())
         } else {
             Children::NotLoaded
@@ -136,7 +147,7 @@ impl Node {
     }
 
     pub fn is_leaf(&self) -> bool {
-        self.kind == NodeKind::Leaf
+        self.kind.is_leaf()
     }
 
     /// Kick off loading the children, if needed.
@@ -288,7 +299,7 @@ fn build_children(kind: &NodeKind, rows: Vec<Vec<Cell>>) -> Vec<Node> {
         NodeKind::SystemDatabasesFolder => rows.iter().map(|r| database_node(r)).collect(),
         NodeKind::LoginsFolder => rows
             .iter()
-            .map(|r| Node::new(format!("{} ({})", s(r, 0), s(r, 1).to_lowercase().replace('_', " ")), NodeKind::Leaf))
+            .map(|r| Node::new(format!("{} ({})", s(r, 0), s(r, 1).to_lowercase().replace('_', " ")), NodeKind::Login { name: s(r, 0) }))
             .collect(),
         NodeKind::TablesFolder { db } => objects(&rows, |schema, name| NodeKind::Table {
             db: db.clone(),
@@ -319,7 +330,7 @@ fn build_children(kind: &NodeKind, rows: Vec<Vec<Cell>>) -> Vec<Node> {
                 )
             })
             .collect(),
-        NodeKind::ColumnsFolder { .. } => rows
+        NodeKind::ColumnsFolder { db, object_id } => rows
             .iter()
             .map(|r| {
                 let ty = type_spec(&s(r, 1), &s(r, 2), &s(r, 3), &s(r, 4));
@@ -335,10 +346,11 @@ fn build_children(kind: &NodeKind, rows: Vec<Vec<Cell>>) -> Vec<Node> {
                 }
                 extra.push(ty);
                 extra.push(if s(r, 5) == "1" { "null".into() } else { "not null".into() });
-                Node::new(format!("{} ({})", s(r, 0), extra.join(", ")), NodeKind::Leaf)
+                let kind = NodeKind::Column { db: db.clone(), object_id: object_id.clone(), name: s(r, 0) };
+                Node::new(format!("{} ({})", s(r, 0), extra.join(", ")), kind)
             })
             .collect(),
-        NodeKind::IndexesFolder { .. } => rows
+        NodeKind::IndexesFolder { db, object_id } => rows
             .iter()
             .map(|r| {
                 let mut d = s(r, 1).to_lowercase().replace('_', " ");
@@ -347,7 +359,8 @@ fn build_children(kind: &NodeKind, rows: Vec<Vec<Cell>>) -> Vec<Node> {
                 } else if s(r, 2) == "1" {
                     d = format!("unique, {d}");
                 }
-                Node::new(format!("{} ({d})", s(r, 0)), NodeKind::Leaf)
+                let kind = NodeKind::Index { db: db.clone(), object_id: object_id.clone(), name: s(r, 0) };
+                Node::new(format!("{} ({d})", s(r, 0)), kind)
             })
             .collect(),
         _ => Vec::new(),

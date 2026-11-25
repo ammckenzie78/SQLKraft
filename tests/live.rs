@@ -68,3 +68,61 @@ SELECT DB_NAME() AS db\n";
     let rows = f.fetch("SELECT name FROM sys.databases ORDER BY name");
     assert!(rows.iter().any(|r| r[0].as_deref() == Some("master")));
 }
+
+/// Every Properties-pane query runs and returns a row, using objects that ship in msdb.
+#[test]
+#[ignore]
+fn properties_queries() {
+    use sqlkraft::explorer::NodeKind;
+    use sqlkraft::properties;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = Session::spawn(rt.handle(), info(), std::sync::Arc::new(|| {}));
+    let ev = collect(&s, |e| matches!(e, Event::Connected(_) | Event::ConnectFailed(_)), Duration::from_secs(20));
+    assert!(matches!(ev.last(), Some(Event::Connected(_))), "connect failed: {ev:?}");
+
+    let one = |sql: &str| -> Vec<String> {
+        let (_, rows) = rt.block_on(s.fetch(sql)).unwrap().unwrap();
+        rows.into_iter().next().unwrap_or_default().into_iter().map(|c| c.unwrap_or_default()).collect()
+    };
+    let first = |ty: &str| -> (String, String) {
+        let r = one(&format!(
+            "SELECT TOP (1) s.name, o.name FROM msdb.sys.objects o JOIN msdb.sys.schemas s ON s.schema_id = o.schema_id \
+             WHERE o.type IN ({ty}) ORDER BY o.name"
+        ));
+        (r[0].clone(), r[1].clone())
+    };
+    let db = "msdb".to_string();
+    let (ts, tn) = first("'U'");
+    let (vs, vn) = first("'V'");
+    let (ps, pn) = first("'P'");
+    let (fs, fname) = first("'FN','IF','TF'");
+    let oid = format!("OBJECT_ID(N'[msdb].[{ts}].[{tn}]')");
+    let col = one(&format!("SELECT TOP (1) name FROM msdb.sys.columns WHERE object_id = {oid} ORDER BY column_id"))[0].clone();
+    let idx = one(&format!("SELECT TOP (1) name FROM msdb.sys.indexes WHERE object_id = {oid} AND index_id > 0"));
+    let login = one("SELECT SUSER_SNAME()")[0].clone();
+
+    let mut kinds = vec![
+        NodeKind::Server,
+        NodeKind::Database { db: db.clone() },
+        NodeKind::Table { db: db.clone(), schema: ts, name: tn },
+        NodeKind::View { db: db.clone(), schema: vs, name: vn },
+        NodeKind::Procedure { db: db.clone(), schema: ps, name: pn },
+        NodeKind::Function { db: db.clone(), schema: fs, name: fname, table_valued: false },
+        NodeKind::Column { db: db.clone(), object_id: oid.clone(), name: col },
+        NodeKind::Login { name: login },
+    ];
+    if let Some(i) = idx.first() {
+        kinds.push(NodeKind::Index { db: db.clone(), object_id: oid, name: i.clone() });
+    }
+    for kind in kinds {
+        let q = properties::query(&kind).unwrap();
+        let (_, rows) = rt.block_on(s.fetch(q.sql.clone())).unwrap().unwrap_or_else(|e| panic!("{kind:?}: {e:#}\n{}", q.sql));
+        let props = q.parse(&rows).unwrap_or_else(|e| panic!("{kind:?}: {e}"));
+        println!("--- {kind:?}");
+        for p in &props {
+            println!("  [{}] {} = {}", p.category, p.label, p.value);
+        }
+        assert!(props.iter().any(|p| p.label == "Name" && !p.value.is_empty()), "{kind:?}");
+    }
+}
