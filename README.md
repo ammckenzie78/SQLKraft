@@ -265,7 +265,7 @@ SQLKRAFT_TEST_SERVER=localhost,1433 SQLKRAFT_TEST_USER=sqlkraft_test SQLKRAFT_TE
 - **Messages are captured from tracing events.** tiberius doesn't expose PRINT output or row counts in its API. SQLKraft reads them from the driver's `tracing` events (`src/capture.rs`). A future tiberius release could change those events, and the Messages tab would then lose them.
 - **Encryption on older servers.** SQL Server 2012 and older often can't negotiate TLS 1.2. Use *Encrypt: Optional* for those servers.
 - **Row limit.** A result set keeps at most *Max rows per result* rows (View menu, default 1,000,000).
-- **Not yet implemented:** execution plans, IntelliSense, Activity Monitor, and agent jobs.
+- **Not yet implemented:** execution plans, Activity Monitor, and agent jobs.
 
 ## Settings
 
