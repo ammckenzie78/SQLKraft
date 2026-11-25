@@ -1,8 +1,8 @@
 name: Release
 
 # Push a tag like v0.2.0 (matching the version in Cargo.toml) to publish a release:
-#   1. build .deb packages for amd64 and arm64
-#   2. create a GitHub Release with the packages and plain binaries attached
+#   1. build .deb packages for amd64 and arm64, and a Windows x64 zip
+#   2. create a GitHub Release with the packages, plain binaries and Windows zip attached
 #   3. rebuild the signed APT repository on GitHub Pages from the latest releases
 #
 # The APT step needs a repository secret APT_GPG_PRIVATE_KEY (ASCII-armoured private key)
@@ -80,9 +80,35 @@ jobs:
           name: dist-${{ matrix.arch }}
           path: dist/*
 
+  build-windows:
+    if: github.event_name == 'push'
+    name: Build windows-x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test and build
+        run: |
+          cargo test --locked
+          cargo build --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          & target/release/sqlkraft.exe --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive -Path target/release/sqlkraft.exe, README.md, LICENSE `
+            -DestinationPath "dist/sqlkraft-$env:GITHUB_REF_NAME-windows-x64.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-windows-x64
+          path: dist/*
+
   release:
     name: GitHub Release
-    needs: build
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write

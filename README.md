@@ -60,6 +60,12 @@ Download a `.deb` from [Releases](https://github.com/ammckenzie78/SQLKraft/relea
 sudo apt install ./sqlkraft_*.deb
 ```
 
+## Installing on Windows
+
+Download `sqlkraft-vX.Y.Z-windows-x64.zip` from [Releases](https://github.com/ammckenzie78/SQLKraft/releases),
+extract it, and run `sqlkraft.exe`. It is a single portable executable with no installer.
+The exe is not code-signed, so SmartScreen may warn the first time you run it.
+
 ## Releasing
 
 1. Bump `version` in `Cargo.toml`, then commit.
@@ -70,7 +76,7 @@ sudo apt install ./sqlkraft_*.deb
    ```
 
 The [Release workflow](.github/workflows/release.yml) then:
-- builds the `.deb`s and tarballs for amd64 and arm64;
+- builds the `.deb`s and tarballs for amd64 and arm64, and a Windows x64 zip;
 - creates a GitHub Release with those files and their SHA256 checksums;
 - rebuilds the signed APT repository on GitHub Pages from the five most recent stable releases.
 
