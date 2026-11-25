@@ -82,11 +82,21 @@ fn shrink_log_after_log_backup() {
     let mut f = Fixture::new(live_or_skip!());
     let db = f.db.clone();
     let q = quote_ident(&db);
-    // No backup file is left behind: back up to the null device.
+    // On Windows, back up to the null device so no file is left behind. SQL Server on Linux
+    // refuses /dev/null (OS error 31 resizing it), so there use a sqlkraft_test_ file in the
+    // default backup folder, overwritten each time (WITH INIT, FORMAT).
     let windows = f.fetch("SELECT host_platform FROM sys.dm_os_host_info")[0][0].as_deref() == Some("Windows");
-    let null = if windows { "NUL" } else { "/dev/null" };
+    let null = if windows {
+        "NUL".to_string()
+    } else {
+        let dir = f.fetch("SELECT CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS nvarchar(4000))")[0][0]
+            .clone()
+            .unwrap_or_else(|| "/var/opt/mssql/data".into());
+        format!("{}/{db}_log_test.bak", dir.trim_end_matches('/'))
+    };
+    let null = null.replace('\'', "''");
     f.exec(&format!("ALTER DATABASE {q} SET RECOVERY FULL"));
-    f.exec(&format!("BACKUP DATABASE {q} TO DISK = N'{null}'"));
+    f.exec(&format!("BACKUP DATABASE {q} TO DISK = N'{null}' WITH INIT, FORMAT"));
 
     let log = file_of(&f, FileType::Log);
     grow(&f, &log, (log.size_mb.ceil() as u64) + 32);
@@ -110,7 +120,7 @@ fn shrink_log_after_log_backup() {
         Err(e) => panic!("VLF count failed: {e:#}"),
     }
 
-    f.exec(&format!("BACKUP LOG {q} TO DISK = N'{null}'"));
+    f.exec(&format!("BACKUP LOG {q} TO DISK = N'{null}' WITH INIT, FORMAT"));
     run(&mut f, &m::shrink_file_script(&db, &before.name, ShrinkFileAction::Reorganize { target_mb: 1 }, false));
     let after = file_of(&f, FileType::Log);
     assert!(after.size_mb < before.size_mb - 10.0, "log shrank after a log backup: {before:?} -> {after:?}");
