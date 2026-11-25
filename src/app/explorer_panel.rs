@@ -7,6 +7,7 @@ use super::{Action, ConnState, SqlKraftApp};
 use crate::db::Session;
 use crate::explorer::{self, Children, Node, NodeKind};
 use crate::icons;
+use crate::properties;
 use crate::scripting::ScriptMode;
 
 impl SqlKraftApp {
@@ -43,7 +44,15 @@ impl SqlKraftApp {
                 if let ConnState::Failed(e) = &server.state {
                     ui.colored_label(Color32::from_rgb(220, 80, 80), e);
                 }
-                show_node(ui, &mut server.root, &server.session, si, server.claude_writes, &mut actions);
+                let selected = self.selection.as_ref().filter(|s| s.server == si).map(|s| s.node);
+                let ctx = NodeCtx {
+                    session: &server.session,
+                    server: si,
+                    selected,
+                    server_name: &server.info.server,
+                    claude_writes: server.claude_writes,
+                };
+                show_node(ui, &mut server.root, &ctx, &mut actions);
             }
         });
         for a in actions {
@@ -59,16 +68,52 @@ impl SqlKraftApp {
 // Widgets
 // ---------------------------------------------------------------------------------------------
 
-fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usize, claude_writes: bool, actions: &mut Vec<Action>) {
+/// What `show_node` needs from the server it is drawing.
+struct NodeCtx<'a> {
+    session: &'a Session,
+    server: usize,
+    server_name: &'a str,
+    /// The selected node's id, if it is in this server's tree.
+    selected: Option<u64>,
+    /// The user let Claude change data on this server.
+    claude_writes: bool,
+}
+
+/// The name the Properties pane shows: the object's own name, without the extras in its label.
+fn node_name(node: &Node, server_name: &str) -> String {
+    match &node.kind {
+        NodeKind::Server => server_name.to_string(),
+        NodeKind::Column { name, .. } | NodeKind::Index { name, .. } | NodeKind::Login { name } => name.clone(),
+        _ => node.label.clone(),
+    }
+}
+
+fn show_node(ui: &mut egui::Ui, node: &mut Node, ctx: &NodeCtx, actions: &mut Vec<Action>) {
     let icon = node.kind.icon();
+    let is_selected = ctx.selected == Some(node.id);
+    let (node_id, node_kind, name) = (node.id, node.kind.clone(), node_name(node, ctx.server_name));
+    let select = |show: bool| Action::Select {
+        server: ctx.server,
+        node: node_id,
+        kind: node_kind.clone(),
+        name: name.clone(),
+        show,
+    };
     if node.is_leaf() {
         ui.horizontal(|ui| {
             ui.add_space(18.0);
-            let r = ui.add(egui::Label::new(format!("{icon} {}", node.label)).sense(egui::Sense::click()));
+            let r = ui.selectable_label(is_selected, format!("{icon} {}", node.label));
+            if r.clicked() || r.secondary_clicked() {
+                actions.push(select(false));
+            }
             r.context_menu(|ui| {
                 if ui.button("Copy").clicked() {
                     let name = node.label.split(" (").next().unwrap_or(&node.label).to_string();
                     actions.push(Action::CopyText(name));
+                    ui.close();
+                }
+                if properties::query(&node.kind).is_some() && ui.button("Properties").clicked() {
+                    actions.push(select(true));
                     ui.close();
                 }
             });
@@ -78,15 +123,17 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
     let id = ui.make_persistent_id(("node", node.id));
     let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
     if state.is_open() {
-        node.ensure_loading(session);
+        node.ensure_loading(ctx.session);
     }
     let kind = node.kind.clone();
     let badge = node.badge;
     let painted = icons::is_painted(&kind);
     let label = if painted { node.label.clone() } else { format!("{icon} {}", node.label) };
+    let select_action = select(false);
+    let show_action = select(true);
     let header = state.show_header(ui, |ui| {
         let icon_r = painted.then(|| icons::show(ui, &kind, badge));
-        let r = ui.add(egui::Label::new(label).sense(egui::Sense::click()).selectable(false));
+        let r = ui.selectable_label(is_selected, label);
         let r = match icon_r {
             Some(i) => r.union(i),
             None => r,
@@ -94,7 +141,7 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
         if r.double_clicked() {
             match &kind {
                 NodeKind::Table { .. } | NodeKind::View { .. } => {
-                    actions.push(Action::SelectTop { server, kind: kind.clone(), run: true })
+                    actions.push(Action::SelectTop { server: ctx.server, kind: kind.clone(), run: true })
                 }
                 _ => {}
             }
@@ -117,13 +164,23 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, session: &Session, server: usiz
                 ui.weak("(empty)");
             }
             for c in children {
-                show_node(ui, c, session, server, claude_writes, actions);
+                show_node(ui, c, ctx, actions);
             }
         }
     });
     let header_label = header_inner.inner;
+    if header_label.clicked() || header_label.secondary_clicked() {
+        actions.push(select_action);
+    }
     header_label.context_menu(|ui| {
-        node_menu(ui, &kind, server, claude_writes, actions, &refresh);
+        node_menu(ui, &kind, ctx.server, ctx.claude_writes, actions, &refresh);
+        if properties::query(&kind).is_some() {
+            ui.separator();
+            if ui.button("Properties").clicked() {
+                actions.push(show_action);
+                ui.close();
+            }
+        }
     });
     if header_label.clicked() {
         // Click on the label toggles, like a tree view.
