@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, RichText};
 use tokio::sync::oneshot;
 
+use crate::backup::{self as b, ServerFolders};
 use crate::db::{Cell, ColumnMeta, ConnectionInfo, Event, FetchResult, Message, MsgKind, Repaint, Session};
 use crate::maintenance;
 use crate::sql;
@@ -172,6 +173,50 @@ impl Runner {
                 }
             });
         }
+    }
+}
+
+/// Default folders and path style of a server, loaded once per dialog.
+pub(super) struct FolderLoader {
+    paths: Pending,
+    host: Pending,
+    row: Option<Rows>,
+    platform: Option<Option<String>>,
+    pub(super) folders: Option<ServerFolders>,
+    pub(super) error: Option<String>,
+}
+
+impl FolderLoader {
+    pub(super) fn new(meta: &Session) -> Self {
+        Self {
+            paths: Pending::new(meta.fetch(b::SERVER_PATHS_QUERY)),
+            host: Pending::new(meta.fetch(b::HOST_PLATFORM_QUERY)),
+            row: None,
+            platform: None,
+            folders: None,
+            error: None,
+        }
+    }
+
+    /// Returns true when the folders have just become available.
+    pub(super) fn poll(&mut self) -> bool {
+        match self.paths.poll() {
+            Some(Ok(r)) => self.row = Some(r),
+            Some(Err(e)) => self.error = Some(e),
+            None => {}
+        }
+        if let Some(r) = self.host.poll() {
+            self.platform = Some(r.ok().and_then(|(_, rows)| rows.first().and_then(|r| r.first().cloned().flatten())));
+        }
+        if self.folders.is_none()
+            && self.platform.is_some()
+            && let Some((_, rows)) = &self.row
+        {
+            let row = rows.first().cloned().unwrap_or_default();
+            self.folders = Some(b::parse_server_folders(&row, self.platform.clone().flatten().as_deref()));
+            return true;
+        }
+        false
     }
 }
 

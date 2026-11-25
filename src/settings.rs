@@ -24,6 +24,8 @@ pub struct Settings {
     /// point it at a temp dir so they never touch the user's real settings.
     #[serde(skip)]
     pub dir: Option<PathBuf>,
+    /// Server-side folders recently used in the backup file browser, per server name.
+    pub recent_folders: std::collections::BTreeMap<String, Vec<String>>,
     /// The Properties pane (F4) is open.
     pub show_properties: bool,
 }
@@ -38,6 +40,7 @@ impl Default for Settings {
             script_target: ScriptTarget::Connected,
             claude_bridge: true,
             dir: None,
+            recent_folders: Default::default(),
             show_properties: false,
         }
     }
@@ -92,5 +95,21 @@ impl Settings {
         self.recent.insert(0, info);
         self.recent.truncate(15);
         self.save();
+    }
+
+    /// Most recent first, at most 8 per server; saved straight away.
+    pub fn remember_folder(&mut self, server: &str, folder: &str) {
+        if folder.trim().is_empty() {
+            return;
+        }
+        let list = self.recent_folders.entry(server.to_lowercase()).or_default();
+        list.retain(|f| f != folder);
+        list.insert(0, folder.to_string());
+        list.truncate(8);
+        self.save();
+    }
+
+    pub fn folders_for(&self, server: &str) -> Vec<String> {
+        self.recent_folders.get(&server.to_lowercase()).cloned().unwrap_or_default()
     }
 }

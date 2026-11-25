@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use sqlkraft::db::{AuthKind, Cell, ConnectionInfo, Event, Session};
+use sqlkraft::db::{AuthKind, Cell, ColumnMeta, ConnectionInfo, Event, Session};
 use sqlkraft::explorer::{Children, Node, NodeKind};
 use sqlkraft::sql::{quote_ident, quote_literal, split_batches};
 
@@ -82,6 +82,7 @@ pub struct Fixture {
     pub db: String,
     pub spid: i32,
     extra_dbs: Vec<String>,
+    files: Vec<String>,
 }
 
 impl Fixture {
@@ -104,7 +105,7 @@ impl Fixture {
             Some(Event::Connected(facts)) => facts.spid,
             other => panic!("could not connect to the test server: {other:?}"),
         };
-        Self { rt, session, info, db: unique_name(), spid, extra_dbs: Vec::new() }
+        Self { rt, session, info, db: unique_name(), spid, extra_dbs: Vec::new(), files: Vec::new() }
     }
 
     /// Another empty database dropped with this fixture.
@@ -144,6 +145,24 @@ impl Fixture {
         let reply = r.map_err(|_| anyhow::anyhow!("timed out"))?;
         let (_, rows) = reply.map_err(|_| anyhow::anyhow!("connection closed"))??;
         Ok(rows)
+    }
+
+    /// A database created by the test itself (a restore, say), dropped with this fixture.
+    pub fn register_database(&mut self, db: &str) {
+        self.extra_dbs.push(db.to_string());
+    }
+
+    /// A backup file written on the server, deleted with this fixture if possible.
+    pub fn register_file(&mut self, path: &str) {
+        self.files.push(path.to_string());
+    }
+
+    /// Like `try_fetch`, with the column names.
+    pub fn fetch_with_columns(&self, sql: &str) -> anyhow::Result<(Vec<ColumnMeta>, Vec<Vec<Cell>>)> {
+        let rx = self.session.fetch(sql);
+        let r = self.rt.block_on(async { tokio::time::timeout(Duration::from_secs(60), rx).await });
+        let reply = r.map_err(|_| anyhow::anyhow!("timed out"))?;
+        reply.map_err(|_| anyhow::anyhow!("connection closed"))?
     }
 
     /// Like `fetch` but for statements without results.
@@ -203,6 +222,21 @@ impl Drop for Fixture {
             );
             if let Err(e) = self.try_fetch(&sql) {
                 eprintln!("warning: could not drop test database {db}: {e:#}");
+            }
+        }
+        // Backup files: xp_delete_file needs sysadmin; when the server is this machine, the
+        // test user may be able to delete them directly. Otherwise they are left behind, named
+        // sqlkraft_test_*.
+        for path in std::mem::take(&mut self.files) {
+            let sql = format!("EXEC master.sys.xp_delete_file 0, {}", quote_literal(&path));
+            if self.try_fetch(&sql).is_ok() {
+                continue;
+            }
+            let local = std::path::Path::new(&path);
+            if !local.exists() {
+                eprintln!("note: test backup file {path} is not visible from here: left on the server, or never written (xp_delete_file needs sysadmin)");
+            } else if let Err(e) = std::fs::remove_file(local) {
+                eprintln!("note: could not delete test backup file {path}: {e}");
             }
         }
     }

@@ -216,10 +216,16 @@ fn node_menu(
             let label = if claude_writes { "✔ Allow Claude to modify data" } else { "Allow Claude to modify data" };
             item(ui, label, Action::ToggleClaudeWrites(server));
         }
+        NodeKind::DatabasesFolder => {
+            item(ui, "Restore Database…", Action::Restore { server, db: None });
+        }
         NodeKind::Database { db } => {
             item(ui, "New Query", Action::NewQuery { server, db: Some(db.clone()) });
             item(ui, "Copy name", Action::CopyText(db.clone()));
             ui.menu_button("Tasks", |ui| {
+                item(ui, "Back Up…", Action::BackUp { server, db: db.clone() });
+                item(ui, "Restore Database…", Action::Restore { server, db: Some(db.clone()) });
+                ui.separator();
                 ui.menu_button("Shrink", |ui| {
                     item(ui, "Database…", Action::Shrink { server, db: db.clone(), database: true });
                     item(ui, "Files…", Action::Shrink { server, db: db.clone(), database: false });
