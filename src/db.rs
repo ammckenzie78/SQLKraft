@@ -286,6 +286,8 @@ pub struct ServerFacts {
     pub product_version: String,
     pub login: String,
     pub spid: i32,
+    /// `contained database authentication` is on, so partially contained databases are usable.
+    pub contained_auth: bool,
 }
 
 #[derive(Debug)]
@@ -431,6 +433,14 @@ async fn worker(
     }
 }
 
+/// Whether the instance allows contained databases to authenticate their own users. Azure SQL
+/// Database (engine edition 5) always does. Errors (permissions, older versions) read as "no".
+async fn contained_auth(client: &mut SqlClient) -> bool {
+    let sql = "SELECT CASE WHEN CAST(SERVERPROPERTY('EngineEdition') AS int) = 5 THEN 1                ELSE (SELECT CAST(value_in_use AS int) FROM sys.configurations                      WHERE name = N'contained database authentication') END";
+    matches!(fetch(client, sql).await, Ok((_, rows))
+        if rows.first().and_then(|r| r.first().cloned().flatten()).as_deref() == Some("1"))
+}
+
 async fn open(info: &ConnectionInfo, out: &Out) -> Option<SqlClient> {
     let mut client = match connect(info).await {
         Ok(c) => c,
@@ -449,12 +459,14 @@ async fn open(info: &ConnectionInfo, out: &Out) -> Option<SqlClient> {
         Ok((_, rows)) if !rows.is_empty() => {
             let r = &rows[0];
             let s = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+            let contained_auth = contained_auth(&mut client).await;
             out.send(Event::Connected(ServerFacts {
                 database: s(0),
                 version: s(1),
                 product_version: s(2),
                 login: s(3),
                 spid: s(4).parse().unwrap_or(0),
+                contained_auth,
             }));
             Some(client)
         }
