@@ -568,10 +568,20 @@ async fn run_batches(
     healthy
 }
 
-/// How long a cancel waits for an in-flight read to reach a token boundary. When a row is
-/// split across packets the rest arrives within milliseconds; when the server is sending
-/// nothing (WAITFOR, a blocked query) this is added to the cancel, so keep it short.
-const SETTLE: Duration = Duration::from_millis(250);
+/// How long a cancel lets a read that is part-way through a token finish. The rest of the
+/// token is already on its way, so this is only reached if the server or network stalls.
+const FINISH_TOKEN: Duration = Duration::from_secs(30);
+
+/// After a cancel: when the in-flight read is part-way through a token (`mid_token`), let it
+/// finish, so the bytes it consumed aren't lost and the stream stays in step for the cancel
+/// acknowledgement. Otherwise dropping it is safe and immediate (WAITFOR or a blocked query
+/// costs no extra wait). Returns false if the token never completed.
+async fn finish_token<F: std::future::Future>(read: std::pin::Pin<&mut F>, mid_token: &std::sync::atomic::AtomicBool) -> bool {
+    if !mid_token.load(std::sync::atomic::Ordering::Acquire) {
+        return true;
+    }
+    tokio::time::timeout(FINISH_TOKEN, read).await.is_ok()
+}
 
 struct Outcome {
     error: bool,
@@ -607,6 +617,7 @@ async fn run_one(
     }
     // Never race the send itself: a half-sent request poisons the connection. Sending is quick;
     // the wait for the response is what a cancel must be able to interrupt.
+    let mid_token = client.mid_token_flag();
     if let Err(e) = client.send_batch(batch.text.as_str()).await {
         drain(&mut mrx);
         outcome.error = true;
@@ -620,10 +631,9 @@ async fn run_one(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => {
-                // Let a read that is part-way through a token finish, so the stream stays in
-                // step for the cancel acknowledgement. A query that returns nothing yet (WAITFOR)
-                // has nothing in flight and is simply dropped after the wait.
-                let _ = tokio::time::timeout(SETTLE, &mut response).await;
+                if !finish_token(response.as_mut(), &mid_token).await {
+                    outcome.broken = true;
+                }
                 None
             }
             r = &mut response => Some(r),
@@ -659,9 +669,9 @@ async fn run_one(
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
-                    // Dropping a read part-way through a row loses the bytes it consumed and puts
-                    // the stream out of step; finish it (a token boundary) before cancelling.
-                    let _ = tokio::time::timeout(SETTLE, &mut next).await;
+                    if !finish_token(next.as_mut(), &mid_token).await {
+                        outcome.broken = true;
+                    }
                     outcome.cancelled = true;
                     break;
                 }

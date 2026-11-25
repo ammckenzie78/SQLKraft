@@ -500,6 +500,10 @@ where
             }
 
             let ty_byte = this.conn.read_u8().await?;
+            let mid_token = this.conn.mid_token_flag();
+            // The type byte is consumed; until the token is complete, dropping this read
+            // would lose part of it.
+            mid_token.store(true, std::sync::atomic::Ordering::Release);
 
             let ty = TokenType::try_from(ty_byte)
                 .map_err(|_| Error::Protocol(format!("invalid token type {:x}", ty_byte).into()))?;
@@ -532,6 +536,7 @@ where
                 // rather than silently falling through. Unknown token *bytes*
                 // are already rejected by the `TokenType::try_from` above.
             };
+            mid_token.store(false, std::sync::atomic::Ordering::Release);
 
             Ok(Some((token, this)))
         });

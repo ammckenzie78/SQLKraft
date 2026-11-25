@@ -314,6 +314,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Client<S> {
         Ok(result)
     }
 
+    /// SQLKraft patch: a shared flag that is set while a response token is part-way through
+    /// being decoded. Take it before starting a read; if the read has to be abandoned (a
+    /// cancel), check it: when set, the read has consumed part of a token and must be allowed
+    /// to finish, or the stream falls out of step. When clear, dropping the read is safe.
+    pub fn mid_token_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.connection.mid_token_flag()
+    }
+
     /// Execute a `BULK INSERT` statement, efficiently storing a large number of
     /// rows to a specified table. Note: make sure the input row follows the same
     /// schema as the table, otherwise calling `send()` will return an error.
