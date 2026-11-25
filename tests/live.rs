@@ -10,6 +10,43 @@ use common::{Fixture, collect, finished};
 use sqlkraft::db::{Event, MsgKind};
 use sqlkraft::sql::split_batches;
 
+/// Cancelling must keep the session: same SPID, temp tables, current database.
+#[test]
+fn cancel_keeps_the_session() {
+    let mut f = Fixture::new(live_or_skip!());
+    let db = f.db.clone();
+    let setup = format!("USE [{db}];\nCREATE TABLE #keep (id int); INSERT #keep VALUES (7);");
+    let ev = f.execute(&setup);
+    assert!(matches!(ev.last(), Some(Event::ExecFinished { had_errors: false, .. })), "{ev:?}");
+
+    let long_queries = [
+        // Cancelled before the server sends anything.
+        "WAITFOR DELAY '00:00:30'",
+        // Cancelled while rows are streaming.
+        "SELECT a.object_id, b.object_id FROM sys.all_objects a CROSS JOIN sys.all_objects b CROSS JOIN sys.all_objects c",
+    ];
+    for q in long_queries {
+        f.session.execute(split_batches(q, 0));
+        std::thread::sleep(Duration::from_millis(700));
+        f.session.cancel();
+        let ev = collect(&f.session, finished, Duration::from_secs(20));
+        assert!(matches!(ev.last(), Some(Event::ExecFinished { cancelled: true, .. })), "{q}: {ev:?}");
+
+        let after = f.execute("SELECT @@SPID, DB_NAME(), (SELECT id FROM #keep)");
+        assert!(
+            !after.iter().chain(ev.iter()).any(|e| matches!(e, Event::Disconnected(_) | Event::Connected(_))),
+            "{q}: session was reset: {ev:?} {after:?}"
+        );
+        let row = after
+            .iter()
+            .find_map(|e| if let Event::Rows(r) = e { Some(r[0].clone()) } else { None })
+            .unwrap_or_else(|| panic!("{q}: no rows after cancel: {after:?}"));
+        assert_eq!(row[0].as_deref(), Some(f.spid.to_string().as_str()), "{q}: same SPID");
+        assert_eq!(row[1].as_deref(), Some(db.as_str()), "{q}: same database");
+        assert_eq!(row[2].as_deref(), Some("7"), "{q}: temp table survived");
+    }
+}
+
 #[test]
 fn end_to_end() {
     let mut f = Fixture::empty(live_or_skip!());

@@ -1,0 +1,23 @@
+# Local patches to tiberius 0.13.0
+
+This directory is tiberius 0.13.0 from crates.io (MIT/Apache-2.0, see the licence files),
+used through `[patch.crates-io]` in the top-level `Cargo.toml`. Only `src/`, `Cargo.toml`,
+the licences and the README are kept.
+
+## 1. Cancellation: wait for the Attention acknowledgement across messages
+
+`src/client/connection.rs` (`cancel_request`) and `src/tds/stream/token.rs`
+(`find_done_attention`).
+
+`Client::cancel_query` sends an Attention packet and then reads the token stream for the
+`DONE` token with the `DONE_ATTN` bit. Upstream reads only until the end of the current
+message. When the cancelled request's own response ends first, for example a `WAITFOR`
+cancelled before it returned anything, SQL Server sends the acknowledgement in the *next*
+message. Upstream then fails with "Never got a DONE token acknowledging the Attention
+signal", and the connection has to be thrown away, losing temp tables, `USE`, `SET`
+options and open transactions.
+
+The patch keeps reading messages, up to 64, until the acknowledgement arrives. Server
+errors raised by the cancelled request are skipped while draining.
+
+Drop this patch once upstream tiberius handles it.
