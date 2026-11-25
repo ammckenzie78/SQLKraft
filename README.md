@@ -136,15 +136,25 @@ installs and linking fails with `LNK1104: cannot open file 'msvcrt.lib'`, build 
 cargo test                          # unit tests: batch splitting, tokenizer, scripting, parsing
 ```
 
-The live tests run against a real server. Every statement in them is read-only and uses
-temp tables only:
+The live tests (`tests/live*.rs`) run against a real SQL Server when `SQLKRAFT_TEST_SERVER`
+is set. Without it they print `skipped` and pass, so plain `cargo test` works anywhere:
 
 ```sh
-SQLKRAFT_TEST_SERVER=localhost,1433 SQLKRAFT_TEST_USER=sa SQLKRAFT_TEST_PASSWORD=... \
-    cargo test --test live -- --ignored --nocapture
+SQLKRAFT_TEST_SERVER=localhost,1433 SQLKRAFT_TEST_USER=sqlkraft_test SQLKRAFT_TEST_PASSWORD=... \
+    cargo test
 ```
 
-Leave `SQLKRAFT_TEST_USER` unset to use integrated authentication.
+- Leave `SQLKRAFT_TEST_USER` unset to use integrated authentication.
+- Each test creates its own database named `sqlkraft_test_<uuid>`, seeds it with tables, a
+  view, procedures and functions (`tests/common/mod.rs`), and drops it afterwards, even when
+  the test fails. Tests and parallel runs can share one server.
+- Use a dedicated login rather than `sa`. It needs only the `dbcreator` server role:
+
+  ```sql
+  CREATE LOGIN sqlkraft_test WITH PASSWORD = N'...', CHECK_EXPIRATION = OFF;
+  ALTER SERVER ROLE dbcreator ADD MEMBER sqlkraft_test;
+  ```
+- The tests connect over TCP, so enable the TCP/IP protocol on the server.
 
 ## Notes and limitations
 

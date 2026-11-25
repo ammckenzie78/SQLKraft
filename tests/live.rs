@@ -1,62 +1,18 @@
-//! Live tests against a real SQL Server. Ignored by default; run with
-//!
-//! ```sh
-//! SQLKRAFT_TEST_SERVER=localhost,1433 SQLKRAFT_TEST_USER=sa SQLKRAFT_TEST_PASSWORD=... \
-//!     cargo test --test live -- --ignored --nocapture
-//! ```
-//! Leave SQLKRAFT_TEST_USER unset to use integrated authentication.
-//! Every statement here is read-only (temp tables only).
+//! Query execution against a live server. See `tests/common/mod.rs` for setup; without
+//! `SQLKRAFT_TEST_SERVER` these tests are skipped. Every statement here is read-only (temp
+//! tables only).
+
+mod common;
 
 use std::time::{Duration, Instant};
 
-use sqlkraft::db::{AuthKind, ConnectionInfo, Event, MsgKind, Session};
+use common::{Fixture, collect, finished};
+use sqlkraft::db::{Event, MsgKind};
 use sqlkraft::sql::split_batches;
 
-fn info() -> ConnectionInfo {
-    let server = std::env::var("SQLKRAFT_TEST_SERVER").unwrap_or_else(|_| "localhost".into());
-    let mut info = ConnectionInfo { server, ..Default::default() };
-    match std::env::var("SQLKRAFT_TEST_USER") {
-        Ok(u) => {
-            info.user = u;
-            info.password = std::env::var("SQLKRAFT_TEST_PASSWORD").unwrap_or_default();
-        }
-        Err(_) => info.auth = AuthKind::Integrated,
-    }
-    info
-}
-
-fn collect(session: &Session, until: impl Fn(&Event) -> bool, timeout: Duration) -> Vec<Event> {
-    let start = Instant::now();
-    let mut out = Vec::new();
-    while start.elapsed() < timeout {
-        match session.events.recv_timeout(Duration::from_millis(100)) {
-            Ok(e) => {
-                let stop = until(&e);
-                println!("{e:?}");
-                out.push(e);
-                if stop {
-                    break;
-                }
-            }
-            Err(_) => continue,
-        }
-    }
-    out
-}
-
-fn finished(e: &Event) -> bool {
-    matches!(e, Event::ExecFinished { .. } | Event::ConnectFailed(_))
-}
-
 #[test]
-#[ignore]
 fn end_to_end() {
-    sqlkraft::capture::install();
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let mut s = Session::spawn(rt.handle(), info(), std::sync::Arc::new(|| {}));
-
-    let ev = collect(&s, |e| matches!(e, Event::Connected(_) | Event::ConnectFailed(_)), Duration::from_secs(20));
-    assert!(matches!(ev.last(), Some(Event::Connected(_))), "connect failed: {ev:?}");
+    let mut f = Fixture::empty(live_or_skip!());
 
     let script = "\
 SELECT 1 AS one, N'two' AS two, CAST(NULL AS int) AS n, CAST('2024-01-02T03:04:05.1234567' AS datetime2) AS dt,\n\
@@ -70,8 +26,7 @@ GO 2\n\
 USE tempdb\n\
 GO\n\
 SELECT DB_NAME() AS db\n";
-    s.execute(split_batches(script, 0));
-    let ev = collect(&s, finished, Duration::from_secs(30));
+    let ev = f.execute(script);
 
     let result_sets = ev.iter().filter(|e| matches!(e, Event::ResultSet(_))).count();
     assert_eq!(result_sets, 3, "expected 3 result sets");
@@ -98,39 +53,31 @@ SELECT DB_NAME() AS db\n";
     assert!(matches!(ev.last(), Some(Event::ExecFinished { had_errors: true, cancelled: false, .. })));
 
     // Cancellation of a long-running query, then the connection must still work.
-    s.execute(split_batches("WAITFOR DELAY '00:00:30'", 0));
+    f.session.execute(split_batches("WAITFOR DELAY '00:00:30'", 0));
     std::thread::sleep(Duration::from_millis(500));
     let t = Instant::now();
-    s.cancel();
-    let ev = collect(&s, finished, Duration::from_secs(15));
+    f.session.cancel();
+    let ev = collect(&f.session, finished, Duration::from_secs(15));
     assert!(t.elapsed() < Duration::from_secs(5), "cancel was quick");
     assert!(matches!(ev.last(), Some(Event::ExecFinished { cancelled: true, .. })));
 
-    s.execute(split_batches("SELECT 42", 0));
-    let ev = collect(&s, finished, Duration::from_secs(10));
+    let ev = f.execute("SELECT 42");
     assert!(ev.iter().any(|e| matches!(e, Event::Rows(r) if r[0][0].as_deref() == Some("42"))), "usable after cancel");
 
     // Object Explorer style fetch.
-    let rx = s.fetch("SELECT name FROM sys.databases ORDER BY name");
-    let (_, rows) = rt.block_on(rx).unwrap().unwrap();
+    let rows = f.fetch("SELECT name FROM sys.databases ORDER BY name");
     assert!(rows.iter().any(|r| r[0].as_deref() == Some("master")));
 }
 
 /// Every Properties-pane query runs and returns a row, using objects that ship in msdb.
 #[test]
-#[ignore]
 fn properties_queries() {
     use sqlkraft::explorer::NodeKind;
     use sqlkraft::properties;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let s = Session::spawn(rt.handle(), info(), std::sync::Arc::new(|| {}));
-    let ev = collect(&s, |e| matches!(e, Event::Connected(_) | Event::ConnectFailed(_)), Duration::from_secs(20));
-    assert!(matches!(ev.last(), Some(Event::Connected(_))), "connect failed: {ev:?}");
-
+    let f = Fixture::empty(live_or_skip!());
     let one = |sql: &str| -> Vec<String> {
-        let (_, rows) = rt.block_on(s.fetch(sql)).unwrap().unwrap();
-        rows.into_iter().next().unwrap_or_default().into_iter().map(|c| c.unwrap_or_default()).collect()
+        f.fetch(sql).into_iter().next().unwrap_or_default().into_iter().map(|c| c.unwrap_or_default()).collect()
     };
     let first = |ty: &str| -> (String, String) {
         let r = one(&format!(
@@ -164,7 +111,7 @@ fn properties_queries() {
     }
     for kind in kinds {
         let q = properties::query(&kind).unwrap();
-        let (_, rows) = rt.block_on(s.fetch(q.sql.clone())).unwrap().unwrap_or_else(|e| panic!("{kind:?}: {e:#}\n{}", q.sql));
+        let rows = f.try_fetch(&q.sql).unwrap_or_else(|e| panic!("{kind:?}: {e:#}\n{}", q.sql));
         let props = q.parse(&rows).unwrap_or_else(|e| panic!("{kind:?}: {e}"));
         println!("--- {kind:?}");
         for p in &props {
