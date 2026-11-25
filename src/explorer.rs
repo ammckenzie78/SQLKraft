@@ -412,8 +412,10 @@ pub fn script_create_query(kind: &NodeKind) -> Option<String> {
     match kind {
         // OBJECT_DEFINITION resolves the id in the session's current database (usually master
         // for the explorer connection), so read the target database's sys.sql_modules instead.
+        // Returns (definition, sys.objects.type); the type picks the stub for Script as ALTER.
         NodeKind::View { .. } | NodeKind::Procedure { .. } | NodeKind::Function { .. } => Some(format!(
-            "SELECT m.definition FROM {d}.sys.sql_modules m WHERE m.object_id = OBJECT_ID({lit})",
+            "SELECT m.definition, o.type FROM {d}.sys.sql_modules m \
+             JOIN {d}.sys.objects o ON o.object_id = m.object_id WHERE m.object_id = OBJECT_ID({lit})",
             d = quote_ident(db),
             lit = quote_literal(&full)
         )),

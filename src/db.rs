@@ -286,6 +286,9 @@ pub struct ServerFacts {
     pub product_version: String,
     pub login: String,
     pub spid: i32,
+    /// `SERVERPROPERTY('EngineEdition')`: 2 Standard, 3 Enterprise/Developer, 4 Express,
+    /// 5 Azure SQL Database, 8 Azure SQL Managed Instance, ...
+    pub engine_edition: i32,
     /// `contained database authentication` is on, so partially contained databases are usable.
     pub contained_auth: bool,
 }
@@ -452,7 +455,7 @@ async fn open(info: &ConnectionInfo, out: &Out) -> Option<SqlClient> {
     let facts = fetch(
         &mut client,
         "SELECT DB_NAME(), @@VERSION, CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), \
-         SUSER_SNAME(), CAST(@@SPID AS int)",
+         SUSER_SNAME(), CAST(@@SPID AS int), CAST(SERVERPROPERTY('EngineEdition') AS int)",
     )
     .await;
     match facts {
@@ -466,6 +469,7 @@ async fn open(info: &ConnectionInfo, out: &Out) -> Option<SqlClient> {
                 product_version: s(2),
                 login: s(3),
                 spid: s(4).parse().unwrap_or(0),
+                engine_edition: s(5).parse().unwrap_or(0),
                 contained_auth,
             }));
             Some(client)

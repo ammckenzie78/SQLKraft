@@ -104,6 +104,71 @@ fn script_as_create_for_modules_outside_current_database() {
     }
 }
 
+fn run_ok(f: &mut Fixture, script: &str, what: &str) {
+    let ev = f.execute(script);
+    let errors: Vec<_> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::Message(m) if m.kind == MsgKind::Error => Some(m.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(errors.is_empty(), "{what} failed: {errors:?}\n{script}");
+    assert!(matches!(ev.last(), Some(Event::ExecFinished { .. })), "{what} did not finish: {ev:?}");
+}
+
+/// Every Script as CREATE / ALTER / DROP / DROP and CREATE variant, in both modern and legacy
+/// syntax, runs against a database that lacks the object, and can be run a second time.
+#[test]
+fn version_aware_module_scripts_run_and_rerun() {
+    use sqlkraft::scripting::{ScriptMode, Syntax, drop_script, module_script};
+
+    let mut f = Fixture::new(live_or_skip!());
+    let modules = [
+        (vec!["Views"], "dbo.ActiveCustomers"),
+        (vec!["Programmability", "Stored Procedures"], "dbo.GetCustomer"),
+        (vec!["Programmability", "Stored Procedures"], "sales.Odd]Name Proc"),
+        (vec!["Programmability", "Functions"], "dbo.Twice"),
+        (vec!["Programmability", "Functions"], "sales.LinesFor"),
+    ];
+    let mut sources = Vec::new();
+    for (folder, label) in modules {
+        let kind = object(&f, &folder, label);
+        let row = f.fetch(&explorer::script_create_query(&kind).unwrap()).remove(0);
+        sources.push((label, kind, row[0].clone().unwrap(), row[1].clone().unwrap()));
+    }
+
+    for (syntax, name) in [(Syntax::MODERN, "modern"), (Syntax::LEGACY, "legacy")] {
+        let target = f.extra_database();
+        f.seed(
+            &target,
+            "CREATE SCHEMA sales;\nGO\n\
+             CREATE TABLE dbo.Customers (Id int, Name nvarchar(100), Balance decimal(18,2));\n\
+             CREATE TABLE sales.[Order Lines] (OrderId uniqueidentifier, Qty int);",
+        );
+        let (from, to) = (quote_ident(&f.db), quote_ident(&target));
+        let retarget = |s: String| s.replacen(&from, &to, 1);
+        for (label, kind, def, ty) in &sources {
+            let script = |mode| retarget(module_script(kind, def, ty, mode, syntax));
+            // ALTER must work when the object doesn't exist yet (stub or CREATE OR ALTER).
+            for mode in [ScriptMode::Alter, ScriptMode::Alter, ScriptMode::DropAndCreate, ScriptMode::DropAndCreate] {
+                run_ok(&mut f, &script(mode), &format!("{name} {mode:?} {label}"));
+            }
+            for _ in 0..2 {
+                run_ok(&mut f, &script(ScriptMode::Drop), &format!("{name} Drop {label}"));
+            }
+            run_ok(&mut f, &script(ScriptMode::Create), &format!("{name} Create {label}"));
+            if syntax.create_or_alter {
+                run_ok(&mut f, &script(ScriptMode::Create), &format!("{name} Create again {label}"));
+            }
+        }
+        let table = NodeKind::Table { db: f.db.clone(), schema: "dbo".into(), name: "Customers".into() };
+        for _ in 0..2 {
+            run_ok(&mut f, &retarget(drop_script(&table, syntax).unwrap()), &format!("{name} drop table"));
+        }
+    }
+}
+
 /// Scripts each table, runs the script in a second database, and checks the copy has the same
 /// columns, defaults, computed columns and keys.
 #[test]
