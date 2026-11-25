@@ -319,6 +319,47 @@ fn results_pane_keeps_its_height_when_empty() {
     assert!(top < 650.0, "results pane collapsed: its top edge is at y = {top}");
 }
 
+/// Fills in the connect dialog shown at start-up and waits for Object Explorer to connect.
+fn connect_via_dialog(ui: &mut Ui, info: &sqlkraft::db::ConnectionInfo) {
+    let field = |value: &'static str| By::new().role(Role::TextInput).value(value);
+    ui.harness.get(field("localhost")).set_text_value_accesskit(&info.server);
+    ui.harness.run_ok();
+    ui.harness.get(field("sa")).set_text_value_accesskit(&info.user);
+    ui.harness.run_ok();
+    ui.harness.get_by_role(Role::PasswordInput).set_text_value_accesskit(&info.password);
+    ui.harness.run_ok();
+    ui.harness.get_by_label("Connect").click();
+    ui.harness.step();
+    let connected = format!("{} (SQL Server", info.server);
+    ui.wait_until("the server to connect", Duration::from_secs(30), |ui| ui.harness.query_by_label_contains(&connected).is_some());
+}
+
+/// A result set wider than the window can be scrolled sideways to its last column.
+#[test]
+fn live_wide_results_scroll_horizontally() {
+    let info = live_or_skip!();
+    let mut ui = Ui::start(Settings::default());
+    connect_via_dialog(&mut ui, &info);
+    ui.click("📝 New Query");
+    let cols: Vec<String> = (1..=40).map(|i| format!("{i} AS [a_fairly_long_column_name_{i:02}]")).collect();
+    ui.harness.get_by_role(Role::MultilineTextInput).set_text_value_accesskit(&format!("SELECT {}", cols.join(", ")));
+    ui.harness.run_ok();
+    ui.harness.key_press(egui::Key::F5);
+    ui.wait_until("the result grid", Duration::from_secs(30), |ui| ui.harness.query_by_label("a_fairly_long_column_name_01").is_some());
+
+    let last = "a_fairly_long_column_name_40";
+    let x = |ui: &Ui| ui.harness.query_by_label(last).map(|n| n.rect().max.x);
+    assert!(x(&ui).is_none_or(|x| x > 1400.0), "the last column should start off-screen");
+    if let Some(n) = ui.harness.query_by_label(last) {
+        n.scroll_to_me();
+    }
+    for _ in 0..5 {
+        ui.harness.step();
+    }
+    let x = x(&ui).expect("the last column header is laid out");
+    assert!(x <= 1400.0, "could not scroll to the last column: its right edge is at x = {x}");
+}
+
 /// Shortcut labels say Cmd+ on macOS, like the app's own `keys` helper.
 fn keys(text: &str) -> String {
     if cfg!(target_os = "macos") { text.replace("Ctrl+", "Cmd+") } else { text.to_owned() }
