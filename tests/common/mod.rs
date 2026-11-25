@@ -20,7 +20,12 @@ use sqlkraft::sql::{quote_ident, quote_literal, split_batches};
 
 /// Connection settings from the environment, or `None` to skip live tests.
 pub fn config() -> Option<ConnectionInfo> {
-    let server = std::env::var("SQLKRAFT_TEST_SERVER").ok().filter(|s| !s.trim().is_empty())?;
+    let server = std::env::var("SQLKRAFT_TEST_SERVER").ok().filter(|s| !s.trim().is_empty());
+    // CI sets SQLKRAFT_TEST_REQUIRED so a misconfigured job fails instead of skipping.
+    if server.is_none() && std::env::var("SQLKRAFT_TEST_REQUIRED").is_ok_and(|v| v == "1") {
+        panic!("SQLKRAFT_TEST_REQUIRED=1 but SQLKRAFT_TEST_SERVER is not set");
+    }
+    let server = server?;
     let mut info = ConnectionInfo { server, ..Default::default() };
     match std::env::var("SQLKRAFT_TEST_USER") {
         Ok(u) if !u.is_empty() => {

@@ -66,6 +66,67 @@ jobs:
           path: target/debian/*.deb
           retention-days: 14
 
+  live:
+    name: Live tests (SQL Server ${{ matrix.version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["2019", "2022"]
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:${{ matrix.version }}-latest
+        env:
+          ACCEPT_EULA: "Y"
+          # Throwaway container that lives only for this job.
+          MSSQL_SA_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Sa!
+        ports:
+          - 1433:1433
+    env:
+      SA_PASSWORD: Ci-${{ github.run_id }}-${{ github.run_attempt }}-Sa!
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libgl1-mesa-dev libx11-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libwayland-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build tests
+        run: cargo test --locked --no-run
+
+      - name: Create the test login
+        env:
+          CONTAINER: ${{ job.services.mssql.id }}
+        run: |
+          # The test login gets only dbcreator, like a developer's local setup.
+          TEST_PASSWORD="T$(openssl rand -hex 16)a!"
+          echo "::add-mask::$TEST_PASSWORD"
+          echo "SQLKRAFT_TEST_PASSWORD=$TEST_PASSWORD" >> "$GITHUB_ENV"
+          sql() {
+            docker exec -e SQLCMDPASSWORD="$SA_PASSWORD" "$CONTAINER" bash -c '
+              S=$(ls /opt/mssql-tools18/bin/sqlcmd /opt/mssql-tools/bin/sqlcmd 2>/dev/null | head -1)
+              case "$S" in *tools18*) T=-C ;; *) T= ;; esac
+              "$S" $T -S localhost -U sa -b -Q "$0"' "$1"
+          }
+          for i in $(seq 1 60); do
+            if sql "SELECT 1" > /dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          sql "SELECT @@VERSION"
+          sql "CREATE LOGIN sqlkraft_test WITH PASSWORD = N'$TEST_PASSWORD', CHECK_POLICY = OFF; ALTER SERVER ROLE dbcreator ADD MEMBER sqlkraft_test;"
+
+      - name: Live tests
+        env:
+          SQLKRAFT_TEST_SERVER: localhost,1433
+          SQLKRAFT_TEST_USER: sqlkraft_test
+          SQLKRAFT_TEST_REQUIRED: "1"
+        run: cargo test --locked -- --nocapture
+
   windows:
     name: Windows x64
     runs-on: windows-latest
