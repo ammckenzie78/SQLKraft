@@ -294,6 +294,7 @@ impl SqlKraftApp {
                     ("Ctrl+O / Ctrl+S", "Open / save .sql file"),
                     ("Ctrl+W, middle-click tab", "Close query window"),
                     ("Ctrl+R", "Show/hide results pane"),
+                    ("F4", "Show/hide Properties window"),
                     ("Ctrl+= / Ctrl+-", "Editor font size"),
                     ("Ctrl+C in grid", "Copy selected cell"),
                 ] {
