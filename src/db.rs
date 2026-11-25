@@ -568,6 +568,11 @@ async fn run_batches(
     healthy
 }
 
+/// How long a cancel waits for an in-flight read to reach a token boundary. When a row is
+/// split across packets the rest arrives within milliseconds; when the server is sending
+/// nothing (WAITFOR, a blocked query) this is added to the cancel, so keep it short.
+const SETTLE: Duration = Duration::from_millis(250);
+
 struct Outcome {
     error: bool,
     cancelled: bool,
@@ -596,10 +601,33 @@ async fn run_one(
         }
     };
 
-    let started = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => None,
-        r = client.simple_query(batch.text.as_str()) => Some(r),
+    if cancel.is_cancelled() {
+        outcome.cancelled = true;
+        return outcome;
+    }
+    // Never race the send itself: a half-sent request poisons the connection. Sending is quick;
+    // the wait for the response is what a cancel must be able to interrupt.
+    if let Err(e) = client.send_batch(batch.text.as_str()).await {
+        drain(&mut mrx);
+        outcome.error = true;
+        outcome.broken = true;
+        out.send(Event::Message(format_error(&e, batch.start_line)));
+        return outcome;
+    }
+    let started = {
+        let response = client.batch_results();
+        tokio::pin!(response);
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                // Let a read that is part-way through a token finish, so the stream stays in
+                // step for the cancel acknowledgement. A query that returns nothing yet (WAITFOR)
+                // has nothing in flight and is simply dropped after the wait.
+                let _ = tokio::time::timeout(SETTLE, &mut response).await;
+                None
+            }
+            r = &mut response => Some(r),
+        }
     };
     let mut stream = match started {
         None => {
@@ -625,10 +653,20 @@ async fn run_one(
     };
 
     loop {
-        let item = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => { outcome.cancelled = true; break; }
-            it = stream.try_next() => it,
+        let item = {
+            let next = stream.try_next();
+            tokio::pin!(next);
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    // Dropping a read part-way through a row loses the bytes it consumed and puts
+                    // the stream out of step; finish it (a token boundary) before cancelling.
+                    let _ = tokio::time::timeout(SETTLE, &mut next).await;
+                    outcome.cancelled = true;
+                    break;
+                }
+                it = &mut next => it,
+            }
         };
         match item {
             Ok(Some(QueryItem::Metadata(m))) => {

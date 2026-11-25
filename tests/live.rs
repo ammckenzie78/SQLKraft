@@ -47,6 +47,28 @@ fn cancel_keeps_the_session() {
     }
 }
 
+/// Cancelling while wide rows stream, so a row is often split across TDS packets when the
+/// cancel lands. Dropping that half-read row used to put the stream out of step and reset the
+/// session; it must survive every time.
+#[test]
+fn cancel_mid_row_many_times() {
+    let mut f = Fixture::empty(live_or_skip!());
+    let q = "SELECT REPLICATE(CAST(N'x' AS nvarchar(max)), 1200 + a.object_id % 400) AS wide, a.object_id \
+             FROM sys.all_objects a CROSS JOIN sys.all_objects b";
+    for i in 0..20u64 {
+        f.session.execute(split_batches(q, 0));
+        std::thread::sleep(Duration::from_millis(150 + (i * 37) % 300));
+        f.session.cancel();
+        let ev = collect(&f.session, finished, Duration::from_secs(20));
+        let reset = ev.iter().any(|e| matches!(e, Event::Disconnected(_) | Event::Connected(_)))
+            || ev.iter().any(|e| matches!(e, Event::Message(m) if m.text.contains("had to be reset")));
+        assert!(!reset, "iteration {i}: session was reset: {:?}", ev.iter().filter(|e| !matches!(e, Event::Rows(_))).collect::<Vec<_>>());
+        let after = f.execute("SELECT @@SPID");
+        let spid = after.iter().find_map(|e| if let Event::Rows(r) = e { r[0][0].clone() } else { None });
+        assert_eq!(spid.as_deref(), Some(f.spid.to_string().as_str()), "iteration {i}: {after:?}");
+    }
+}
+
 #[test]
 fn end_to_end() {
     let mut f = Fixture::empty(live_or_skip!());
