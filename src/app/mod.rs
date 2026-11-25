@@ -3,6 +3,7 @@
 mod backup_dialog;
 mod claude;
 mod completion_popup;
+mod designer_view;
 mod dialogs;
 mod editor;
 mod explorer_panel;
@@ -88,6 +89,9 @@ enum Action {
     BackUp { server: usize, db: String },
     /// From a database (its history), or from the Databases folder (`db: None`).
     Restore { server: usize, db: Option<String> },
+    /// Tables → New Table…, and a table → Design.
+    NewTable { server: usize, db: String },
+    Design { server: usize, kind: NodeKind },
     /// Select a node; `show` also opens the Properties pane.
     Select { server: usize, node: u64, kind: NodeKind, name: String, show: bool },
 }
@@ -116,6 +120,7 @@ pub struct SqlKraftApp {
     meta: completion_popup::MetaCache,
     selection: Option<Selection>,
     props: Option<PropsView>,
+    designers: Vec<designer_view::TableDesigner>,
 }
 
 impl SqlKraftApp {
@@ -155,6 +160,7 @@ impl SqlKraftApp {
             meta: Default::default(),
             selection: None,
             props: None,
+            designers: Vec::new(),
         };
         app.sync_claude_bridge();
         app.open_dialog(DialogPurpose::ObjectExplorer, info);
@@ -268,6 +274,7 @@ impl SqlKraftApp {
 
         self.meta.poll();
         self.pump_scripts();
+        self.pump_designers();
         self.pump_claude();
     }
 
@@ -356,6 +363,8 @@ impl SqlKraftApp {
             Action::Shrink { server, db, database } => self.open_shrink(server, db, database),
             Action::BackUp { server, db } => self.open_backup(server, db),
             Action::Restore { server, db } => self.open_restore(server, db),
+            Action::NewTable { server, db } => self.open_new_table(server, db),
+            Action::Design { server, kind } => self.open_design(server, kind),
             Action::CopyText(t) => {
                 // handled by the caller with access to ctx
                 let _ = t;
@@ -559,6 +568,7 @@ impl eframe::App for SqlKraftApp {
         self.shrink_window(&ctx);
         self.backup_window(&ctx);
         self.restore_window(&ctx);
+        self.designer_windows(&ctx);
 
         if let Some((msg, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(6) {

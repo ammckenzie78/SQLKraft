@@ -511,6 +511,117 @@ fn live_completion_offers_tables_and_alias_columns() {
     assert_eq!(ui.editor_text(), "SELECT c.Balance FROM dbo.Customers c");
 }
 
+impl Ui {
+    /// Expands each tree node in `path` (waiting for it to load), starting at the server.
+    fn expand(&mut self, connected: &str, path: &[&str]) {
+        let server_label = text_of(&self.harness.get_by_label_contains(connected).accesskit_node()).unwrap();
+        for step in std::iter::once(server_label.as_str()).chain(path.iter().copied()) {
+            let what = format!("tree node {step}");
+            self.wait_until(&what, Duration::from_secs(30), |ui| ui.harness.query(tree_label(step)).is_some());
+            self.harness.get(tree_label(step)).scroll_to_me();
+            self.harness.run_ok();
+            self.harness.get(tree_label(step)).click();
+            self.harness.run_ok();
+        }
+    }
+
+    /// Opens a tree node's context menu and picks `item`.
+    fn node_menu(&mut self, node: &str, item: &str) {
+        let what = format!("tree node {node}");
+        self.wait_until(&what, Duration::from_secs(30), |ui| ui.harness.query(tree_label(node)).is_some());
+        self.harness.get(tree_label(node)).scroll_to_me();
+        self.harness.run_ok();
+        self.harness.get(tree_label(node)).click_secondary();
+        self.harness.run_ok();
+        self.click(item);
+    }
+
+    fn set_field(&mut self, label: &str, value: &str) {
+        self.harness.get_by_label(label).set_text_value_accesskit(value);
+        self.harness.run_ok();
+    }
+
+    /// Visible text containing `part` (labels keep their text in the value).
+    fn shows(&self, part: &str) -> bool {
+        self.harness.query(By::new().predicate(|n| text_of(n).is_some_and(|t| t.contains(part)))).is_some()
+    }
+}
+
+/// Tables → New Table…: two columns, one of them the key, become a CREATE TABLE script in a
+/// new query tab on the right database.
+#[test]
+fn live_new_table_scripts_create_table() {
+    let info = live_or_skip!();
+    let fixture = common::Fixture::new(info.clone());
+    let db = fixture.db.as_str();
+    let mut ui = Ui::start(Settings::default());
+    let connected = ui.connect(&info);
+    ui.expand(&connected, &["Databases", db]);
+    ui.node_menu("Tables", "New Table…");
+    assert!(ui.has(&format!("New Table - {db}")), "the designer window opens");
+
+    ui.set_field("Table name", "Widgets");
+    ui.set_field("Column name 1", "Id");
+    assert_eq!(ui.harness.get_by_label("Column name 1").value().as_deref(), Some("Id"));
+    ui.set_field("Data type 1", "int");
+    assert_eq!(ui.harness.get_by_label("Column name 1").value().as_deref(), Some("Id"));
+    ui.click("Primary key 1");
+    ui.click("Add Column");
+    assert_eq!(ui.harness.get_by_label("Column name 2").value().as_deref(), Some("Column2"));
+    ui.set_field("Column name 2", "Label");
+    ui.set_field("Length 2", "80");
+    ui.click("Generate Script");
+
+    ui.wait_until("the script tab", Duration::from_secs(30), |ui| ui.editor_text().contains("CREATE TABLE"));
+    assert!(!ui.has(&format!("New Table - {db}")), "the designer closes");
+    let text = ui.editor_text();
+    assert!(text.starts_with(&format!("USE [{db}];\nGO\n")), "{text}");
+    assert!(text.contains("CREATE TABLE [dbo].[Widgets]"), "{text}");
+    assert!(text.contains("    [Id] int NOT NULL,\n"), "primary key columns don't allow nulls: {text}");
+    assert!(text.contains("    [Label] nvarchar(80) NULL,\n"), "{text}");
+    assert!(text.contains("CONSTRAINT [PK_Widgets] PRIMARY KEY CLUSTERED ([Id] ASC)"), "{text}");
+    let in_db = format!(".{db} (");
+    ui.wait_until("the tab to connect to the database", Duration::from_secs(30), |ui| ui.harness.query_by_label_contains(&in_db).is_some());
+}
+
+/// Design on dbo.Customers loads its columns; an identity change is refused with a message,
+/// and adding a default becomes an ALTER TABLE script.
+#[test]
+fn live_design_scripts_alter_table() {
+    let info = live_or_skip!();
+    let fixture = common::Fixture::new(info.clone());
+    let db = fixture.db.as_str();
+    let mut ui = Ui::start(Settings::default());
+    let connected = ui.connect(&info);
+    ui.expand(&connected, &["Databases", db, "Tables"]);
+    ui.node_menu("dbo.Customers", "Design");
+
+    let title = format!("Design dbo.Customers - {db}");
+    assert!(ui.has(&title));
+    ui.wait_until("the table definition", Duration::from_secs(30), |ui| ui.has("Column name 7"));
+    assert_eq!(ui.harness.get_by_label("Column name 6").value().as_deref(), Some("Notes"));
+    assert_eq!(ui.harness.get_by_label("Data type 4").value().as_deref(), Some("decimal"));
+    assert_eq!(ui.harness.get_by_label("Precision 4").value().as_deref(), Some("18"));
+    assert!(ui.shows("AS (upper([Name]))"), "the computed column is shown");
+    assert!(ui.shows("No changes to script."));
+
+    ui.click("Identity 1");
+    assert!(ui.shows("not supported yet — it needs a table rebuild"), "identity changes are refused");
+    ui.click("Identity 1");
+    assert!(!ui.shows("needs a table rebuild"));
+
+    ui.set_field("Default 6", "N''");
+    assert!(!ui.shows("No changes to script."));
+    ui.click("Generate Script");
+    ui.wait_until("the script tab", Duration::from_secs(30), |ui| ui.editor_text().contains("ALTER TABLE"));
+    assert!(!ui.has(&title), "the designer closes");
+    let text = ui.editor_text();
+    assert!(text.starts_with(&format!("USE [{db}];\nGO\n")), "{text}");
+    assert!(text.contains("BEGIN TRANSACTION;"), "{text}");
+    assert!(text.contains("ALTER TABLE [dbo].[Customers] ADD CONSTRAINT [DF_Customers_Notes] DEFAULT (N'') FOR [Notes];"), "{text}");
+    assert_eq!(text.matches("ALTER TABLE").count(), 1, "only the change is scripted: {text}");
+}
+
 /// Shortcut labels say Cmd+ on macOS, like the app's own `keys` helper.
 fn keys(text: &str) -> String {
     if cfg!(target_os = "macos") { text.replace("Ctrl+", "Cmd+") } else { text.to_owned() }
