@@ -28,3 +28,14 @@ Drop this patch once upstream tiberius handles it.
 response. SQLKraft awaits the send without racing it against a cancel, because a send dropped
 half-way leaves the connection poisoned, and races only the response. Purely additive;
 `simple_query` is unchanged.
+
+## 3. Mid-token flag (`Client::mid_token_flag`)
+
+`src/client/connection.rs`, `src/tds/stream/token.rs`, `src/client.rs`. The connection keeps a
+shared flag that the token stream sets after reading a token's type byte and clears once the
+token is fully decoded. `Client::mid_token_flag()` hands out the flag. When SQLKraft
+abandons a read to cancel a query, it checks the flag. If it is set, the read has consumed
+part of a token (for example a row split across packets), so it is allowed to finish first;
+dropping it would lose those bytes and leave the stream out of step, so the Attention
+acknowledgement could never be found. If the flag is clear, dropping the read is safe and
+immediate.

@@ -28,8 +28,14 @@ fn cancel_keeps_the_session() {
     for q in long_queries {
         f.session.execute(split_batches(q, 0));
         std::thread::sleep(Duration::from_millis(700));
+        let t = Instant::now();
         f.session.cancel();
         let ev = collect(&f.session, finished, Duration::from_secs(20));
+        // No fixed settle wait: an idle WAITFOR is dropped at once. (A streaming query also has
+        // to stop the server sending rows, so its time varies.)
+        if q.starts_with("WAITFOR") {
+            assert!(t.elapsed() < Duration::from_millis(1500), "{q}: cancel took {:?}", t.elapsed());
+        }
         assert!(matches!(ev.last(), Some(Event::ExecFinished { cancelled: true, .. })), "{q}: {ev:?}");
 
         let after = f.execute("SELECT @@SPID, DB_NAME(), (SELECT id FROM #keep)");

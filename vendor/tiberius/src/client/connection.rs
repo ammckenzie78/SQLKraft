@@ -83,6 +83,10 @@ where
     ///
     /// [`ensure_not_poisoned`]: Self::ensure_not_poisoned
     command_desync: Arc<AtomicBool>,
+    /// SQLKraft patch: set while the token stream is part-way through decoding a token
+    /// (after its type byte, until the token is complete). A read dropped while this is set
+    /// has consumed bytes of an unfinished token, so the stream would be out of step.
+    mid_token: Arc<AtomicBool>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Debug for Connection<S> {
@@ -175,6 +179,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             buf: BytesMut::new(),
             poisoned: false,
             command_desync: Arc::new(AtomicBool::new(false)),
+            mid_token: Arc::new(AtomicBool::new(false)),
         };
 
         let fed_auth_required = matches!(config.auth, AuthMethod::AADToken(_));
@@ -336,6 +341,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     /// mid-response. See the `command_desync` field.
     pub(crate) fn command_desync_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.command_desync)
+    }
+
+    /// SQLKraft patch: a handle to the mid-token flag. See the `mid_token` field.
+    pub(crate) fn mid_token_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.mid_token)
     }
 
     /// Marks the connection poisoned for the duration of a multi-packet write.
@@ -893,6 +903,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                     transport,
                     context,
                     command_desync,
+                    mid_token,
                     ..
                 } = self;
                 let mut stream = match transport.into_inner() {
@@ -914,6 +925,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                     buf: BytesMut::new(),
                     poisoned: false,
                     command_desync,
+                    mid_token,
                 })
             }
         }
@@ -960,6 +972,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             buf: BytesMut::new(),
             poisoned,
             command_desync: Arc::new(AtomicBool::new(false)),
+            mid_token: Arc::new(AtomicBool::new(false)),
         }
     }
 }
