@@ -52,6 +52,10 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 # v4: random names for test databases and the MCP bridge token.
 uuid = { version = "1.29.3", features = ["v4"] }
 
+[dev-dependencies]
+# Headless UI tests (tests/ui.rs): no window, GPU or renderer.
+egui_kittest = { version = "0.37.0", features = ["eframe"] }
+
 [build-dependencies]
 # build.rs renders the app icon from packaging/sqlkraft.svg.
 resvg = { version = "0.45", default-features = false }

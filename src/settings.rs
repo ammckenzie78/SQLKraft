@@ -1,6 +1,6 @@
 //! Persistent settings: recent connections (never passwords) and editor preferences.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +20,10 @@ pub struct Settings {
     pub script_target: ScriptTarget,
     /// Let `sqlkraft --mcp` (Claude Code) use this window's connections.
     pub claude_bridge: bool,
+    /// The directory these settings load from and save to; `None` means [`config_dir`]. Tests
+    /// point it at a temp dir so they never touch the user's real settings.
+    #[serde(skip)]
+    pub dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -31,6 +35,7 @@ impl Default for Settings {
             max_rows_per_result: 1_000_000,
             script_target: ScriptTarget::Connected,
             claude_bridge: true,
+            dir: None,
         }
     }
 }
@@ -44,20 +49,31 @@ pub fn config_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "SQLKraft").map(|d| d.config_dir().to_path_buf())
 }
 
-fn path() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("settings.json"))
-}
-
 impl Settings {
     pub fn load() -> Self {
-        path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
+        match config_dir() {
+            Some(dir) => Self::load_from(&dir),
+            None => Self::default(),
+        }
+    }
+
+    /// Loads `settings.json` from `dir` (defaults when missing); [`Settings::save`] writes back
+    /// there.
+    pub fn load_from(dir: &Path) -> Self {
+        let mut settings: Self = std::fs::read_to_string(dir.join("settings.json"))
+            .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        settings.dir = Some(dir.to_path_buf());
+        settings
+    }
+
+    fn path(&self) -> Option<PathBuf> {
+        self.dir.clone().or_else(config_dir).map(|d| d.join("settings.json"))
     }
 
     pub fn save(&self) {
-        let Some(p) = path() else { return };
+        let Some(p) = self.path() else { return };
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
