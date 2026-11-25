@@ -14,6 +14,17 @@ fn main() -> eframe::Result {
         println!("sqlkraft {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if std::env::args().any(|a| a == "--mcp") {
+        // MCP server on stdio for Claude Code: `claude mcp add sqlkraft -- sqlkraft --mcp`.
+        let settings = sqlkraft::settings::Settings::load();
+        let mut backend = sqlkraft::mcp::headless::Headless::from_settings(&settings);
+        let stdin = std::io::stdin().lock();
+        let stdout = std::io::stdout().lock();
+        if let Err(e) = sqlkraft::mcp::serve(&mut backend, stdin, stdout) {
+            eprintln!("sqlkraft --mcp: {e}");
+        }
+        return Ok(());
+    }
     capture::install();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
