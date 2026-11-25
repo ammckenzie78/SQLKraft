@@ -65,3 +65,31 @@ jobs:
           name: sqlkraft-deb-${{ matrix.arch }}
           path: target/debian/*.deb
           retention-days: 14
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Check the executable
+        shell: pwsh
+        run: |
+          $exe = "target/release/sqlkraft.exe"
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          (Get-Item $exe).VersionInfo | Format-List FileDescription, ProductName, FileVersion
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sqlkraft-windows-x64
+          path: target/release/sqlkraft.exe
+          retention-days: 14

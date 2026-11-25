@@ -51,6 +51,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 uuid = "1.29.3"
 
+[build-dependencies]
+# build.rs renders the app icon from packaging/sqlkraft.svg.
+resvg = { version = "0.45", default-features = false }
+winresource = "0.1"
+
 [target.'cfg(windows)'.dependencies]
 tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls", "chrono", "rust_decimal", "sql-browser-tokio", "winauth"] }
 
