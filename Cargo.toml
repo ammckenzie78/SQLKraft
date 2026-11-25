@@ -49,10 +49,7 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "sync", "mac
 tokio-util = { version = "0.7.20", features = ["compat"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
-uuid = "1.29.3"
-
-[dev-dependencies]
-# Live tests name their throwaway databases sqlkraft_test_<uuid>.
+# v4: random names for test databases and the MCP bridge token.
 uuid = { version = "1.29.3", features = ["v4"] }
 
 [build-dependencies]

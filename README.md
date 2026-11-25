@@ -130,6 +130,47 @@ installs and linking fails with `LNK1104: cannot open file 'msvcrt.lib'`, build 
 *Developer PowerShell* for a complete install (such as VS 2019 Build Tools), or run
 `vcvars64.bat` first.
 
+## Claude Code integration
+
+SQLKraft includes an [MCP](https://modelcontextprotocol.io) server, so Claude Code (or Claude
+Desktop, or any MCP client) can explore schemas, read definitions, run queries and hand you
+scripts in SQLKraft. You add it to **your own** Claude Code, so your Claude subscription is
+only used there; SQLKraft never sees your Claude login.
+
+Set it up once. **Claude → Copy Claude Code setup command** in SQLKraft copies the exact
+command for your install, or type it yourself:
+
+```sh
+claude mcp add --scope user sqlkraft -- sqlkraft --mcp
+```
+
+On Windows, use the full path to `sqlkraft.exe` if it isn't on `PATH`.
+
+How it works:
+
+- **With the SQLKraft window open** (and **Claude → Let Claude Code use this window** on,
+  the default), `sqlkraft --mcp` connects to the window over `127.0.0.1`, using a random token
+  stored in your config folder. Claude sees the servers in your Object Explorer and your
+  query tabs, can read the tab you're working in (`get_active_query`), and can open scripts
+  in new tabs for you to review (`open_query_tab`). Queries run on their own connections.
+  **Claude → Show activity** lists every tool call, and the menu shows **Claude ●** while
+  Claude Code is connected.
+- **Without the window**, `sqlkraft --mcp` connects by itself using your recent connections
+  that need no stored password (integrated authentication), or all of them if you set
+  `SQLKRAFT_MCP_PASSWORD`.
+
+Safety:
+
+- `run_query` is **read-only** by default. Statements that change data, schema, permissions
+  or server state are refused, and everything runs in a transaction that is rolled back. To
+  let Claude change data on one server, right-click it in Object Explorer and choose **Allow
+  Claude to modify data**. That setting lasts until you close SQLKraft.
+- Results are capped (200 rows by default, 10,000 at most) and long values are cut.
+- Credentials never pass through MCP; tools refer to connections by name.
+
+Tools: `list_connections`, `list_databases`, `list_objects`, `describe_object`,
+`get_definition`, `run_query`, `get_active_query`, `open_query_tab`.
+
 ## Testing
 
 ```sh

@@ -45,7 +45,13 @@ impl SqlKraftApp {
                     ui.colored_label(Color32::from_rgb(220, 80, 80), e);
                 }
                 let selected = self.selection.as_ref().filter(|s| s.server == si).map(|s| s.node);
-                let ctx = NodeCtx { session: &server.session, server: si, selected, server_name: &server.info.server };
+                let ctx = NodeCtx {
+                    session: &server.session,
+                    server: si,
+                    selected,
+                    server_name: &server.info.server,
+                    claude_writes: server.claude_writes,
+                };
                 show_node(ui, &mut server.root, &ctx, &mut actions);
             }
         });
@@ -69,6 +75,8 @@ struct NodeCtx<'a> {
     server_name: &'a str,
     /// The selected node's id, if it is in this server's tree.
     selected: Option<u64>,
+    /// The user let Claude change data on this server.
+    claude_writes: bool,
 }
 
 /// The name the Properties pane shows: the object's own name, without the extras in its label.
@@ -165,7 +173,7 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, ctx: &NodeCtx, actions: &mut Ve
         actions.push(select_action);
     }
     header_label.context_menu(|ui| {
-        node_menu(ui, &kind, ctx.server, actions, &refresh);
+        node_menu(ui, &kind, ctx.server, ctx.claude_writes, actions, &refresh);
         if properties::query(&kind).is_some() {
             ui.separator();
             if ui.button("Properties").clicked() {
@@ -185,7 +193,14 @@ fn show_node(ui: &mut egui::Ui, node: &mut Node, ctx: &NodeCtx, actions: &mut Ve
     }
 }
 
-fn node_menu(ui: &mut egui::Ui, kind: &NodeKind, server: usize, actions: &mut Vec<Action>, refresh: &std::cell::Cell<bool>) {
+fn node_menu(
+    ui: &mut egui::Ui,
+    kind: &NodeKind,
+    server: usize,
+    claude_writes: bool,
+    actions: &mut Vec<Action>,
+    refresh: &std::cell::Cell<bool>,
+) {
     let mut item = |ui: &mut egui::Ui, label: &str, action: Action| {
         if ui.button(label).clicked() {
             actions.push(action);
@@ -197,6 +212,9 @@ fn node_menu(ui: &mut egui::Ui, kind: &NodeKind, server: usize, actions: &mut Ve
             item(ui, "New Query", Action::NewQuery { server, db: None });
             item(ui, "Reconnect", Action::Reconnect(server));
             item(ui, "Disconnect", Action::Disconnect(server));
+            ui.separator();
+            let label = if claude_writes { "✔ Allow Claude to modify data" } else { "Allow Claude to modify data" };
+            item(ui, label, Action::ToggleClaudeWrites(server));
         }
         NodeKind::Database { db } => {
             item(ui, "New Query", Action::NewQuery { server, db: Some(db.clone()) });

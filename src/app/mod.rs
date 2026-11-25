@@ -1,5 +1,6 @@
 //! The main window: Object Explorer on the left, query tabs on the right.
 
+mod claude;
 mod dialogs;
 mod editor;
 mod explorer_panel;
@@ -54,6 +55,8 @@ struct ServerEntry {
     facts: Option<ServerFacts>,
     state: ConnState,
     root: Node,
+    /// The user let Claude change data on this connection (never saved).
+    claude_writes: bool,
 }
 
 enum Action {
@@ -64,6 +67,7 @@ enum Action {
     Disconnect(usize),
     Reconnect(usize),
     CopyText(String),
+    ToggleClaudeWrites(usize),
     /// Select a node; `show` also opens the Properties pane.
     Select { server: usize, node: u64, kind: NodeKind, name: String, show: bool },
 }
@@ -83,6 +87,7 @@ pub struct SqlKraftApp {
     allow_quit: bool,
     toast: Option<(String, Instant)>,
     show_about: bool,
+    claude: claude::Claude,
     selection: Option<Selection>,
     props: Option<PropsView>,
 }
@@ -109,9 +114,11 @@ impl SqlKraftApp {
             allow_quit: false,
             toast: None,
             show_about: false,
+            claude: Default::default(),
             selection: None,
             props: None,
         };
+        app.sync_claude_bridge();
         app.open_dialog(DialogPurpose::ObjectExplorer, info);
         app
     }
@@ -215,6 +222,7 @@ impl SqlKraftApp {
         }
 
         self.pump_scripts();
+        self.pump_claude();
     }
 
     fn add_server(&mut self, info: ConnectionInfo, session: Session, facts: ServerFacts) {
@@ -292,6 +300,11 @@ impl SqlKraftApp {
                     s.session = Session::spawn(&self.rt, s.info.clone(), self.repaint.clone());
                     s.state = ConnState::Connecting;
                     s.root = Node::new(s.info.server.clone(), NodeKind::Server);
+                }
+            }
+            Action::ToggleClaudeWrites(i) => {
+                if let Some(s) = self.servers.get_mut(i) {
+                    s.claude_writes = !s.claude_writes;
                 }
             }
             Action::CopyText(t) => {
@@ -450,6 +463,7 @@ impl SqlKraftApp {
                     }
                 });
             });
+            self.claude_menu(ui);
             ui.menu_button("Help", |ui| {
                 if ui.button("Keyboard shortcuts / About").clicked() {
                     self.show_about = true;
@@ -461,7 +475,7 @@ impl SqlKraftApp {
 
 fn server_entry(info: ConnectionInfo, session: Session, facts: Option<ServerFacts>) -> ServerEntry {
     let state = if facts.is_some() { ConnState::Connected } else { ConnState::Connecting };
-    ServerEntry { root: Node::new(info.server.clone(), NodeKind::Server), info, session, facts, state }
+    ServerEntry { root: Node::new(info.server.clone(), NodeKind::Server), info, session, facts, state, claude_writes: false }
 }
 
 impl eframe::App for SqlKraftApp {
@@ -490,6 +504,7 @@ impl eframe::App for SqlKraftApp {
         self.connect_dialog(&ctx);
         self.prompts(&ctx);
         self.about(&ctx);
+        self.claude_log_window(&ctx);
 
         if let Some((msg, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(6) {

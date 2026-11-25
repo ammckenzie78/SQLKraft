@@ -18,6 +18,8 @@ pub struct Settings {
     pub max_rows_per_result: usize,
     /// Server version that Script as CREATE / ALTER / DROP write for.
     pub script_target: ScriptTarget,
+    /// Let `sqlkraft --mcp` (Claude Code) use this window's connections.
+    pub claude_bridge: bool,
     /// The Properties pane (F4) is open.
     pub show_properties: bool,
 }
@@ -30,13 +32,23 @@ impl Default for Settings {
             dark_mode: true,
             max_rows_per_result: 1_000_000,
             script_target: ScriptTarget::Connected,
+            claude_bridge: true,
             show_properties: false,
         }
     }
 }
 
+/// Where settings and the MCP bridge file live. `SQLKRAFT_CONFIG_DIR` overrides it (tests,
+/// portable installs).
+pub fn config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("SQLKRAFT_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    directories::ProjectDirs::from("", "", "SQLKraft").map(|d| d.config_dir().to_path_buf())
+}
+
 fn path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "SQLKraft").map(|d| d.config_dir().join("settings.json"))
+    config_dir().map(|d| d.join("settings.json"))
 }
 
 impl Settings {
