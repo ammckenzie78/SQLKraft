@@ -1,11 +1,14 @@
 //! The main window: Object Explorer on the left, query tabs on the right.
 
+mod backup_dialog;
 mod claude;
 mod dialogs;
 mod editor;
 mod explorer_panel;
 mod file_dialogs;
+mod file_browser;
 mod query_tab;
+mod restore_dialog;
 mod results;
 mod runner;
 mod scripts;
@@ -72,6 +75,9 @@ enum Action {
     ToggleClaudeWrites(usize),
     /// Tasks → Shrink → Database… (`database`) or Files….
     Shrink { server: usize, db: String, database: bool },
+    BackUp { server: usize, db: String },
+    /// From a database (its history), or from the Databases folder (`db: None`).
+    Restore { server: usize, db: Option<String> },
 }
 
 pub struct SqlKraftApp {
@@ -92,6 +98,8 @@ pub struct SqlKraftApp {
     claude: claude::Claude,
     file_dialogs: Box<dyn FileDialogs>,
     shrink: Option<shrink_dialog::ShrinkDialog>,
+    backup: Option<backup_dialog::BackupDialog>,
+    restore: Option<restore_dialog::RestoreDialog>,
 }
 
 impl SqlKraftApp {
@@ -126,6 +134,8 @@ impl SqlKraftApp {
             claude: Default::default(),
             file_dialogs: Box::new(NativeFileDialogs),
             shrink: None,
+            backup: None,
+            restore: None,
         };
         app.sync_claude_bridge();
         app.open_dialog(DialogPurpose::ObjectExplorer, info);
@@ -316,6 +326,8 @@ impl SqlKraftApp {
                 }
             }
             Action::Shrink { server, db, database } => self.open_shrink(server, db, database),
+            Action::BackUp { server, db } => self.open_backup(server, db),
+            Action::Restore { server, db } => self.open_restore(server, db),
             Action::CopyText(t) => {
                 // handled by the caller with access to ctx
                 let _ = t;
@@ -495,6 +507,8 @@ impl eframe::App for SqlKraftApp {
         self.about(&ctx);
         self.claude_log_window(&ctx);
         self.shrink_window(&ctx);
+        self.backup_window(&ctx);
+        self.restore_window(&ctx);
 
         if let Some((msg, at)) = &self.toast {
             if at.elapsed() > Duration::from_secs(6) {
