@@ -26,6 +26,8 @@ pub(super) struct TableDesigner {
     info: ConnectionInfo,
     load: Load,
     design: Design,
+    /// The row whose drag handle is being dragged.
+    dragging: Option<usize>,
 }
 
 enum Outcome {
@@ -132,15 +134,40 @@ impl TableDesigner {
         let cols = &mut self.design.table.columns;
         let count = cols.len();
         let mut action: Option<(usize, RowAction)> = None;
-        egui::Grid::new(("designer_grid", self.id)).striped(true).spacing([6.0, 4.0]).show(ui, |ui| {
+        // Each row's vertical extent, for working out where a dragged row would land.
+        let mut rows: Vec<egui::Rangef> = Vec::with_capacity(count);
+        let mut drop_released = false;
+        let grid = egui::Grid::new(("designer_grid", self.id)).striped(true).spacing([6.0, 4.0]).show(ui, |ui| {
             for h in headers {
                 ui.strong(h);
             }
             ui.end_row();
             for (i, c) in cols.iter_mut().enumerate() {
                 let n = i + 1;
-                ui.label(if c.source.is_none() && self.design.original.is_some() { format!("{n}*") } else { n.to_string() })
-                    .on_hover_text(if c.source.is_none() { "New column" } else { "Existing column" });
+                ui.horizontal(|ui| {
+                    let handle = drag_handle(ui, self.dragging == Some(i)).on_hover_text("Drag to move this column");
+                    let handle = handle.accessible_name(format!("Drag to move column {n}"));
+                    rows.push(handle.rect.y_range());
+                    if handle.drag_started() {
+                        self.dragging = Some(i);
+                    }
+                    if handle.drag_stopped() {
+                        drop_released = true;
+                    }
+                    // Keyboard and screen-reader users can still reorder from the handle's menu.
+                    handle.context_menu(|ui| {
+                        if ui.add_enabled(i > 0, egui::Button::new("Move up")).accessible_name(format!("Move column {n} up")).clicked() {
+                            action = Some((i, RowAction::Up));
+                            ui.close();
+                        }
+                        if ui.add_enabled(i + 1 < count, egui::Button::new("Move down")).accessible_name(format!("Move column {n} down")).clicked() {
+                            action = Some((i, RowAction::Down));
+                            ui.close();
+                        }
+                    });
+                    ui.label(if c.source.is_none() && self.design.original.is_some() { format!("{n}*") } else { n.to_string() })
+                        .on_hover_text(if c.source.is_none() { "New column" } else { "Existing column" });
+                });
                 ui.add(egui::TextEdit::singleline(&mut c.name).desired_width(140.0)).accessible_name(format!("Column name {n}"));
                 if let Some(expr) = &c.computed {
                     ui.label(RichText::new(format!("AS {expr}")).italics()).on_hover_text("Computed column: it can be renamed or removed here");
@@ -150,23 +177,37 @@ impl TableDesigner {
                 } else {
                     column_cells(ui, c, n);
                 }
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(i > 0, egui::Button::new("↑").small()).accessible_name(format!("Move column {n} up")).clicked() {
-                        action = Some((i, RowAction::Up));
-                    }
-                    if ui.add_enabled(i + 1 < count, egui::Button::new("↓").small()).accessible_name(format!("Move column {n} down")).clicked() {
-                        action = Some((i, RowAction::Down));
-                    }
-                    if ui.add(egui::Button::new("✖").small()).accessible_name(format!("Remove column {n}")).clicked() {
-                        action = Some((i, RowAction::Remove));
-                    }
-                });
+                if remove_button(ui).on_hover_text("Remove this column").accessible_name(format!("Remove column {n}")).clicked() {
+                    action = Some((i, RowAction::Remove));
+                }
                 ui.end_row();
             }
         });
+
+        // While a row is dragged: show where it would land, and move it on release.
+        if let Some(from) = self.dragging {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            let target = ui.ctx().pointer_latest_pos().map(|p| drop_index(&rows, p.y));
+            if let Some(to) = target {
+                let y = match rows.get(to) {
+                    Some(r) => r.min - 2.0,
+                    None => rows.last().map_or(grid.response.rect.bottom(), |r| r.max + 2.0),
+                };
+                let x = grid.response.rect.x_range();
+                ui.painter().hline(x, y, egui::Stroke::new(2.0, ui.visuals().selection.stroke.color));
+            }
+            if drop_released || !ui.input(|i| i.pointer.any_down()) {
+                if let Some(to) = target {
+                    action = Some((from, RowAction::MoveTo(to)));
+                }
+                self.dragging = None;
+            }
+        }
+
         match action {
             Some((i, RowAction::Up)) => cols.swap(i, i - 1),
             Some((i, RowAction::Down)) => cols.swap(i, i + 1),
+            Some((from, RowAction::MoveTo(to))) => move_to(cols, from, to),
             Some((i, RowAction::Remove)) => {
                 cols.remove(i);
             }
@@ -181,7 +222,95 @@ impl TableDesigner {
 enum RowAction {
     Up,
     Down,
+    /// Drag and drop: move to this insertion point (0 = before the first row, len = last).
+    MoveTo(usize),
     Remove,
+}
+
+/// The insertion point for a row dropped at height `y`: before the first row whose middle is
+/// below `y`, or after the last row.
+fn drop_index(rows: &[egui::Rangef], y: f32) -> usize {
+    rows.iter().position(|r| y < r.center()).unwrap_or(rows.len())
+}
+
+/// Moves item `from` to insertion point `to`, counted before the item is taken out (so
+/// `to == from` or `from + 1` leaves it where it is).
+fn move_to<T>(v: &mut Vec<T>, from: usize, to: usize) {
+    if from >= v.len() {
+        return;
+    }
+    let dest = if to > from { to - 1 } else { to };
+    if dest != from {
+        let item = v.remove(from);
+        v.insert(dest.min(v.len()), item);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drop_index_uses_row_middles() {
+        let rows = [egui::Rangef::new(0.0, 20.0), egui::Rangef::new(24.0, 44.0), egui::Rangef::new(48.0, 68.0)];
+        assert_eq!(drop_index(&rows, -5.0), 0);
+        assert_eq!(drop_index(&rows, 9.0), 0);
+        assert_eq!(drop_index(&rows, 11.0), 1);
+        assert_eq!(drop_index(&rows, 40.0), 2);
+        assert_eq!(drop_index(&rows, 60.0), 3);
+        assert_eq!(drop_index(&rows, 500.0), 3);
+    }
+
+    #[test]
+    fn move_to_insertion_points() {
+        let moved = |from, to| {
+            let mut v = vec!['a', 'b', 'c', 'd'];
+            move_to(&mut v, from, to);
+            v.into_iter().collect::<String>()
+        };
+        assert_eq!(moved(0, 0), "abcd");
+        assert_eq!(moved(0, 1), "abcd", "dropping just below itself is no move");
+        assert_eq!(moved(0, 2), "bacd");
+        assert_eq!(moved(0, 4), "bcda", "to the end");
+        assert_eq!(moved(3, 0), "dabc", "to the top");
+        assert_eq!(moved(2, 1), "acbd");
+        assert_eq!(moved(9, 0), "abcd", "out of range is ignored");
+    }
+}
+
+/// A grip of six dots that starts a row drag.
+fn drag_handle(ui: &mut egui::Ui, active: bool) -> egui::Response {
+    let h = ui.spacing().interact_size.y;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(12.0, h), egui::Sense::drag());
+    if resp.hovered() && !active {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    let color = if active || resp.hovered() { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
+    let c = rect.center();
+    for dx in [-2.5, 2.5] {
+        for dy in [-4.5, 0.0, 4.5] {
+            ui.painter().circle_filled(egui::pos2(c.x + dx, c.y + dy), 1.4, color);
+        }
+    }
+    resp
+}
+
+/// A square button with an X painted at its exact centre (the ✖ glyph sat off-centre and came
+/// out in the emoji font's colour).
+fn remove_button(ui: &mut egui::Ui) -> egui::Response {
+    let size = ui.spacing().interact_size.y;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let v = ui.style().interact(&resp);
+        ui.painter().rect(rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, egui::StrokeKind::Inside);
+        let color = if resp.hovered() { Color32::from_rgb(220, 80, 80) } else { v.fg_stroke.color };
+        let r = size * 0.18;
+        let c = rect.center();
+        let stroke = egui::Stroke::new(1.6, color);
+        ui.painter().line_segment([c + egui::vec2(-r, -r), c + egui::vec2(r, r)], stroke);
+        ui.painter().line_segment([c + egui::vec2(-r, r), c + egui::vec2(r, -r)], stroke);
+    }
+    resp
 }
 
 /// Type through Primary Key for an ordinary (not computed) column.
@@ -247,7 +376,7 @@ impl SqlKraftApp {
         let id = self.next_designer_id();
         let mut design = Design::new_table(db);
         design.table.columns.push(Column::new("Column1"));
-        self.designers.push(TableDesigner { id, info, load: Load::Ready, design });
+        self.designers.push(TableDesigner { id, info, load: Load::Ready, design, dragging: None });
     }
 
     /// A table → Design: loads its definition on the Object Explorer connection.
@@ -260,7 +389,7 @@ impl SqlKraftApp {
         let mut design = Design::new_table(db);
         design.table.schema = schema;
         design.table.name = name;
-        self.designers.push(TableDesigner { id, info, load: Load::Loading(rx), design });
+        self.designers.push(TableDesigner { id, info, load: Load::Loading(rx), design, dragging: None });
     }
 
     pub(super) fn pump_designers(&mut self) {

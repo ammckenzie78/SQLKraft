@@ -570,6 +570,30 @@ fn live_new_table_scripts_create_table() {
     assert_eq!(ui.harness.get_by_label("Column name 2").value().as_deref(), Some("Column2"));
     ui.set_field("Column name 2", "Label");
     ui.set_field("Length 2", "80");
+
+    // Drag handles: add a third column, drag it above the first, then remove it with its
+    // X button. Each step is checked through the column names' order.
+    ui.click("Add Column");
+    ui.set_field("Column name 3", "Moved");
+    let names = |ui: &Ui| -> Vec<String> {
+        (1..=3).filter_map(|n| ui.harness.query_by_label(&format!("Column name {n}")).and_then(|f| f.value())).collect()
+    };
+    let grip = ui.harness.get_by_label("Drag to move column 3").rect().center();
+    let top = ui.harness.get_by_label("Drag to move column 1").rect();
+    ui.harness.hover_at(grip);
+    ui.harness.step();
+    ui.harness.drag_at(grip);
+    ui.harness.step();
+    for k in 1..=6 {
+        let y = grip.y + (top.top() + 2.0 - grip.y) * k as f32 / 6.0;
+        ui.harness.hover_at(egui::pos2(grip.x, y));
+        ui.harness.step();
+    }
+    ui.harness.drop_at(egui::pos2(grip.x, top.top() + 2.0));
+    ui.harness.run_ok();
+    assert_eq!(names(&ui), ["Moved", "Id", "Label"], "dragging the third column above the first");
+    ui.click("Remove column 1");
+    assert_eq!(names(&ui), ["Id", "Label"], "the X removes the column");
     ui.click("Generate Script");
 
     ui.wait_until("the script tab", Duration::from_secs(30), |ui| ui.editor_text().contains("CREATE TABLE"));
