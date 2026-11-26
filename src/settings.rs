@@ -22,6 +22,15 @@ pub struct Settings {
     pub claude_bridge: bool,
     /// Show the completion list while typing (Ctrl+Space always shows it).
     pub completion_auto_popup: bool,
+    /// Experimental, off by default: in `WHERE c.City = 'ma` offer the column's most common
+    /// values. This reads table data (on a separate short-lived connection).
+    pub value_suggestions: bool,
+    /// Value suggestions read at most this many rows of the table; counts are approximate
+    /// beyond it.
+    pub value_scan_rows: u64,
+    /// Tables with more rows than this (per `sys.partitions`) only get value suggestions on
+    /// Ctrl+Space.
+    pub value_auto_max_table_rows: u64,
     /// The directory these settings load from and save to; `None` means [`config_dir`]. Tests
     /// point it at a temp dir so they never touch the user's real settings.
     #[serde(skip)]
@@ -42,6 +51,9 @@ impl Default for Settings {
             script_target: ScriptTarget::Connected,
             claude_bridge: true,
             completion_auto_popup: true,
+            value_suggestions: false,
+            value_scan_rows: 200_000,
+            value_auto_max_table_rows: 1_000_000,
             dir: None,
             recent_folders: Default::default(),
             show_properties: false,

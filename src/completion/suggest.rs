@@ -48,7 +48,7 @@ impl<'m> Builder<'_, 'm> {
     }
 
     fn push(&mut self, prio: u8, kind: Kind, name: &str, detail: String, insert: String) {
-        self.out.push((prio, Item { name: name.to_string(), kind, detail, insert }));
+        self.out.push((prio, Item { name: name.to_string(), kind, detail, insert, replace: None }));
     }
 
     fn columns_of(&mut self, db: Option<&str>, schema: Option<&str>, name: &str, prio: u8) {

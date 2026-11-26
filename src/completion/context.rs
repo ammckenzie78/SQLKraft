@@ -109,7 +109,7 @@ pub fn unquote(s: &str) -> String {
 }
 
 /// A string token that has its closing quote.
-fn closed_string(s: &str) -> bool {
+pub(super) fn closed_string(s: &str) -> bool {
     let inner = s.strip_prefix(['N', 'n']).unwrap_or(s);
     let Some(inner) = inner.strip_prefix('\'') else { return true };
     let trailing = inner.chars().rev().take_while(|&c| c == '\'').count();

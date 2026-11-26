@@ -56,6 +56,33 @@ desktop app, a single binary with no .NET or ODBC, and it runs on Linux, Windows
 - You can open and save `.sql` files. You're prompted about unsaved changes when closing a tab or quitting.
 - Dark and light themes, and an adjustable editor font size (Ctrl+= / Ctrl+-).
 
+**Column value suggestions (experimental, off by default)**
+- Turn on with *View → Suggest column values (experimental)*. Then, right of `=`, `<>`, `!=`,
+  `LIKE` or `IN (` (and after a comma in the list), with a column of a table in scope on the
+  left, the completion list offers that column's most common values containing what you typed:
+  `WHERE c.City = 'ma` offers `Madison`, `Marshfield`, …, `Wautoma`. Prefix matches come first,
+  then the most frequent, then alphabetical; the count is shown next to each value.
+- Accepting inserts the value quoted for the column's type (`N'…'` for nchar / nvarchar,
+  `'…'` for char / varchar, `'` doubled; wildcards bracketed inside a `LIKE`). After `=` / `<>`
+  on a nullable column with NULLs, *IS NULL* / *IS NOT NULL* is offered too.
+- Only character columns of tables (not views), and not `(max)`, `text`, `xml`, binary or
+  non-persisted computed columns.
+- Because this reads your data, not just the catalog, it is guarded:
+  - It runs on its own short-lived connection, never the query tab's, so it can't touch your
+    transaction or `SET` options. The query names the database explicitly.
+  - It only starts after a ~300 ms pause in typing (or at once on Ctrl+Space), one lookup at
+    a time.
+  - It reads at most `value_scan_rows` rows (settings file, default 200,000). Beyond that the
+    counts come from a sample and are shown as approximate (`~1,204`).
+  - `SET LOCK_TIMEOUT 1000` and a 5-second query timeout: it never waits behind writers or
+    runs long. A failed lookup is retried on Ctrl+Space.
+  - Tables with more than `value_auto_max_table_rows` rows (from `sys.partitions`, default
+    1,000,000) only get suggestions on Ctrl+Space.
+  - Results are cached per connection, database, table, column and typed text until
+    *Refresh IntelliSense Cache* (Ctrl+Shift+R); a search that returned every match also
+    answers longer typed text. So values changed since are not seen until then.
+  - Nothing is sent anywhere but your own SQL Server.
+
 On macOS, every Ctrl shortcut uses Cmd instead (Cmd+E, Cmd+N, Cmd+S, ...). F5 usually needs the
 **fn** key on a Mac keyboard, so Cmd+E is the easier way to execute; there is no Break key, so
 cancel with Cmd+Shift+C.

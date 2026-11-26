@@ -5,8 +5,9 @@
 mod catalog;
 mod context;
 mod suggest;
+pub mod values;
 
-pub use catalog::{Catalog, Column, DbObject, ObjKind, has_ddl};
+pub use catalog::{Catalog, Column, DbObject, Literal, ObjKind, has_ddl};
 pub use context::{Clause, Context, TableRef, context, unquote};
 pub use suggest::{MAX_ITEMS, Metadata, Suggestions, suggest};
 
@@ -23,6 +24,8 @@ pub enum Kind {
     Procedure,
     Schema,
     Database,
+    /// A column's value (experimental value suggestions).
+    Value,
 }
 
 impl Kind {
@@ -36,6 +39,7 @@ impl Kind {
             Kind::Procedure => "procedure",
             Kind::Schema => "schema",
             Kind::Database => "database",
+            Kind::Value => "value",
         }
     }
 }
@@ -49,6 +53,9 @@ pub struct Item {
     pub detail: String,
     /// What replaces the word under the caret when accepted.
     pub insert: String,
+    /// Byte range of the text replaced instead of the context's word (`= '` becomes
+    /// `IS NULL`).
+    pub replace: Option<std::ops::Range<usize>>,
 }
 
 
