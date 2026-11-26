@@ -1,0 +1,88 @@
+name: Watch tiberius upstream
+
+# SQLKraft uses a patched copy of tiberius (vendor/tiberius, see SQLKRAFT-PATCHES.md) until the
+# cancel fix lands upstream. Once a week this checks for:
+#   - a tiberius release newer than the vendored one, and
+#   - the upstream cancel bug (tiberius-rs/tiberius#459) being closed,
+# and opens an issue here with the steps to go back to the official crate. It never opens the
+# same issue twice. On pull requests that change this file it runs as a dry run.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/tiberius-watch.yml
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Dry run on pull requests: pretend the vendored copy is older, so the "new
+          # release" path is exercised, and only print the issues that would be opened.
+          DRY_RUN: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+          FAKE_VENDORED: ${{ github.event_name == 'pull_request' && '0.12.0' || '' }}
+        run: |
+          set -euo pipefail
+          UPSTREAM=tiberius-rs/tiberius
+          UPSTREAM_ISSUE=459
+
+          vendored=$(sed -n 's/^version = "\(.*\)"/\1/p' vendor/tiberius/Cargo.toml | head -n1)
+          vendored=${FAKE_VENDORED:-$vendored}
+          latest=$(curl -fsSL -A "sqlkraft-ci" https://crates.io/api/v1/crates/tiberius | jq -r .crate.max_stable_version)
+          issue_state=$(gh api "repos/$UPSTREAM/issues/$UPSTREAM_ISSUE" --jq .state)
+          echo "vendored tiberius: $vendored"
+          echo "latest on crates.io: $latest"
+          echo "upstream #$UPSTREAM_ISSUE: $issue_state"
+
+          # Opens an issue unless one with this exact title already exists (open or closed).
+          open_issue() {
+            local title=$1 body
+            # The text above is indented for YAML; Markdown would read that as a code block.
+            body=$(printf '%s\n' "$2" | sed 's/^[[:space:]]*//')
+            local existing
+            existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --limit 200 --json title \
+              | jq --arg t "$title" '[.[] | select(.title == $t)] | length')
+            if [ "$existing" != "0" ]; then
+              echo "Already reported: $title"
+              return
+            fi
+            if [ "$DRY_RUN" = "1" ]; then
+              printf '::notice::Would open issue: %s\n%s\n' "$title" "$body"
+              return
+            fi
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          }
+
+          checklist="Steps to go back to the official crate (see \`vendor/tiberius/SQLKRAFT-PATCHES.md\`):
+
+          - [ ] Check which of our patches the new code makes unnecessary. Patch 1 (cancel ack across messages) is the one $UPSTREAM#$UPSTREAM_ISSUE tracks. Patches 2 and 3 add API that \`src/db.rs\` uses (\`send_batch\` / \`batch_results\`, \`mid_token_flag\`).
+          - [ ] Remove the \`[patch.crates-io]\` entry from \`Cargo.toml\` and point \`tiberius\` at the new release (or the upstream git commit), then delete \`vendor/tiberius\`.
+          - [ ] Adapt \`run_one\` in \`src/db.rs\` if patches 2 and 3 are gone: go back to \`simple_query\` and rely on upstream's cancel draining.
+          - [ ] Run the full suite against a live server, including \`cancel_keeps_the_session\` and \`cancel_mid_row_many_times\`, several times under load. Both must stay green, or keep the patches that are still needed."
+
+          if [ "$(printf '%s\n%s\n' "$vendored" "$latest" | sort -V | tail -n1)" != "$vendored" ]; then
+            open_issue "tiberius $latest released (we vendor $vendored)" \
+              "tiberius **$latest** is on crates.io: https://crates.io/crates/tiberius/$latest. We use a patched copy of **$vendored**.
+
+          Release notes: https://github.com/$UPSTREAM/releases
+
+          $checklist"
+          fi
+
+          if [ "$issue_state" = "closed" ]; then
+            open_issue "tiberius cancel fix ($UPSTREAM#$UPSTREAM_ISSUE) closed upstream" \
+              "The upstream issue for our cancel patch, https://github.com/$UPSTREAM/issues/$UPSTREAM_ISSUE, is closed. Check which PR fixed it (#460 or #469) and whether it also covers a cancel that lands part-way through a row. If it's merged but not released yet, we can switch to a git dependency on upstream's commit, or wait for the release.
+
+          $checklist"
+          fi

@@ -39,3 +39,28 @@ part of a token (for example a row split across packets), so it is allowed to fi
 dropping it would lose those bytes and leave the stream out of step, so the Attention
 acknowledgement could never be found. If the flag is clear, dropping the read is safe and
 immediate.
+
+## Going back to the official crate
+
+The goal is to drop this directory once upstream fixes the cancel bug, so we don't drift from
+the maintainers. Upstream tracking (repository moved to `tiberius-rs/tiberius`):
+
+- [#459](https://github.com/tiberius-rs/tiberius/issues/459): the cancel acknowledgement
+  arriving in a later message (our patch 1). Open PRs: #460 (drains token by token) and #469
+  (drains whole packets, and says it also covers a cancel that lands part-way through a token,
+  which would make patch 3 unnecessary).
+- [#79](https://github.com/tiberius-rs/tiberius/issues/79): futures dropped mid-response
+  leaving the connection out of step (what patches 2 and 3 work around).
+
+`.github/workflows/tiberius-watch.yml` checks weekly for a newer tiberius release and for #459
+being closed, and opens an issue here when either happens. To switch:
+
+1. See which patches the new upstream code makes unnecessary.
+2. Remove the `[patch.crates-io]` entry from the top-level `Cargo.toml` and point `tiberius` at
+   the new release (or an upstream git commit, if the fix is merged but not released), then
+   delete `vendor/tiberius`.
+3. If patches 2 and 3 are gone, change `run_one` in `src/db.rs` back to `simple_query` and
+   rely on upstream's cancel draining.
+4. Run the full suite against a live server, including `cancel_keeps_the_session` and
+   `cancel_mid_row_many_times`, several times under load. Keep any patch whose test fails
+   without it.
