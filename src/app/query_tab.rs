@@ -329,7 +329,7 @@ impl SqlKraftApp {
         }
         ui.separator();
         let font_size = self.settings.editor_font_size;
-        let auto_popup = self.settings.completion_auto_popup;
+        let opts = super::completion_popup::CompletionOpts::from(&self.settings);
         let dark = ui.visuals().dark_mode;
         let a = self.active.min(self.tabs.len() - 1);
         self.active = a;
@@ -353,7 +353,7 @@ impl SqlKraftApp {
                 });
         }
 
-        egui::CentralPanel::default_margins().show(ui, |ui| editor(ui, tab, font_size, dark, &mut self.meta, auto_popup));
+        egui::CentralPanel::default_margins().show(ui, |ui| editor(ui, tab, font_size, dark, &mut self.meta, &opts));
 
         if export {
             self.export_csv(a);

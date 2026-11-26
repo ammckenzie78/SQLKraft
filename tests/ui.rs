@@ -511,6 +511,113 @@ fn live_completion_offers_tables_and_alias_columns() {
     assert_eq!(ui.editor_text(), "SELECT c.Balance FROM dbo.Customers c");
 }
 
+/// Experimental value suggestions on `dbo.Places` (see `common::PLACES`): off by default, so
+/// `WHERE c.City = 'ma` offers nothing; turned on in the View menu, it offers the matching
+/// values, prefix matches first and then by count, and Tab inserts the quoted value.
+fn editor() -> By<'static> {
+    By::new().role(Role::MultilineTextInput)
+}
+
+/// A fixture with `dbo.Places`, and the app with `settings` connected to it with a query tab
+/// on it whose catalog has loaded.
+fn places_query(info: &sqlkraft::db::ConnectionInfo, settings: Settings) -> (common::Fixture, Ui) {
+    let fixture = common::Fixture::new(info.clone());
+    fixture.seed(&fixture.db, common::PLACES);
+    let mut ui = Ui::start(settings);
+    let connected = ui.connect(info);
+    let db = fixture.db.clone();
+    ui.expand(&connected, &["Databases"]);
+    ui.node_menu(&db, "New Query");
+    let in_db = format!(".{db} (");
+    ui.wait_until("the query tab to connect", Duration::from_secs(30), |ui| ui.harness.query_by_label_contains(&in_db).is_some());
+    ui.harness.get(editor()).focus();
+    ui.harness.run_ok();
+    // Columns are offered once the catalog has loaded.
+    ui.harness.get(editor()).type_text("SELECT * FROM dbo.Places c WHERE c.Ci");
+    ui.harness.run_ok();
+    ui.wait_until("the columns of c", Duration::from_secs(30), |ui| ui.harness.query(suggestion("City column")).is_some());
+    (fixture, ui)
+}
+
+impl Ui {
+    /// Replaces the editor's text by typing `text`.
+    fn retype(&mut self, text: &str) {
+        self.harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        self.harness.get(editor()).type_text(text);
+        self.harness.run_ok();
+    }
+
+    /// Steps frames in real time for `ms` (longer than the value lookup's typing pause).
+    fn idle(&mut self, ms: u64) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(ms) {
+            std::thread::sleep(Duration::from_millis(50));
+            self.harness.step();
+        }
+    }
+
+    fn offered(&self) -> Vec<String> {
+        self.harness.query_all(By::new().role(Role::ListBoxOption)).filter_map(|n| n.accesskit_node().label()).collect()
+    }
+}
+
+#[test]
+fn live_value_suggestions_offer_common_values_when_turned_on() {
+    let info = live_or_skip!();
+    let (_fixture, mut ui) = places_query(&info, Settings::default());
+    let query = "SELECT * FROM dbo.Places c WHERE c.City = 'ma";
+    ui.retype(query);
+    ui.idle(1500);
+    assert!(ui.harness.query(By::new().role(Role::ListBoxOption)).is_none(), "off by default: no values");
+
+    ui.click("View");
+    ui.click("Suggest column values (experimental)");
+    let saved = std::fs::read_to_string(ui.dir.0.join("settings.json")).unwrap();
+    assert!(saved.contains("\"value_suggestions\": true"), "{saved}");
+    ui.harness.key_press(egui::Key::Escape);
+    ui.harness.run_ok();
+    ui.harness.get(editor()).focus();
+    ui.harness.run_ok();
+    ui.retype(query);
+    ui.wait_until("values of City", Duration::from_secs(30), |ui| ui.harness.query(suggestion("Madison value 5")).is_some());
+    assert_eq!(
+        ui.offered(),
+        ["Madison value 5", "Marshfield value 3", "Mauston value 2", "Mayville value 2", "Manitowoc value 1", "Wautoma value 4"],
+    );
+    ui.harness.key_press(egui::Key::Tab);
+    ui.harness.run_ok();
+    assert_eq!(ui.editor_text(), "SELECT * FROM dbo.Places c WHERE c.City = N'Madison'");
+    assert!(ui.harness.query(By::new().role(Role::ListBoxOption)).is_none(), "accepting closes the list");
+
+    // A narrower search is answered from the cache, and a varchar column gets '...'.
+    ui.retype("SELECT * FROM dbo.Places c WHERE c.City = 'mad");
+    assert_eq!(ui.offered(), ["Madison value 5"], "at once, from the cache (no typing pause)");
+    ui.retype("SELECT * FROM dbo.Places c WHERE c.Code IN ('x', 'W");
+    ui.wait_until("values of Code", Duration::from_secs(30), |ui| ui.harness.query(suggestion("wi value 27")).is_some());
+    ui.harness.key_press(egui::Key::Enter);
+    ui.harness.run_ok();
+    assert_eq!(ui.editor_text(), "SELECT * FROM dbo.Places c WHERE c.Code IN ('x', 'wi'");
+}
+
+/// A table above the size threshold gets values only on Ctrl+Space; with the scan capped
+/// below the table's size the counts are marked approximate.
+#[test]
+fn live_value_suggestions_on_large_tables_need_ctrl_space() {
+    let info = live_or_skip!();
+    let settings = Settings { value_suggestions: true, value_auto_max_table_rows: 20, value_scan_rows: 10, ..Default::default() };
+    let (_fixture, mut ui) = places_query(&info, settings);
+    ui.retype("SELECT * FROM dbo.Places c WHERE c.City = '");
+    ui.idle(1500);
+    assert!(ui.offered().is_empty(), "27 rows is above the threshold: {:?}", ui.offered());
+    ui.harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Space);
+    ui.harness.run_ok();
+    ui.wait_until("values after Ctrl+Space", Duration::from_secs(30), |ui| !ui.offered().is_empty());
+    let offered = ui.offered();
+    assert!(offered.iter().all(|l| l.contains(" value ~")), "{offered:?}");
+    let total: u64 = offered.iter().map(|l| l.rsplit('~').next().unwrap().parse::<u64>().unwrap()).sum();
+    assert_eq!(total, 10, "only 10 rows were read: {offered:?}");
+}
+
 impl Ui {
     /// Expands each tree node in `path` (waiting for it to load), starting at the server.
     fn expand(&mut self, connected: &str, path: &[&str]) {

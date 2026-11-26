@@ -10,15 +10,21 @@ use std::ops::Range;
 use std::time::Duration;
 
 use eframe::egui::{
-    self, Align2, Color32, EventFilter, FontId, Id, Key, KeyboardShortcut, LayerId, Modifiers, Order, Sense,
-    SurrenderFocusOn, text::CCursor, text::CCursorRange, text_edit::TextEditOutput, text_edit::TextEditState,
+    self, EventFilter, Id, Key, KeyboardShortcut, LayerId, Modifiers, Order, SurrenderFocusOn, text::CCursor,
+    text::CCursorRange, text_edit::TextEditOutput, text_edit::TextEditState,
 };
 use tokio::sync::oneshot::{self, error::TryRecvError};
 
 use super::query_tab::QueryTab;
 use super::{ConnState, SqlKraftApp, keys};
-use crate::completion::{self, Catalog, Item, Kind, Metadata};
-use crate::db::{Cell, ConnectionInfo, FetchResult, Session};
+use crate::completion::values::{self as vals, Resolved};
+use crate::completion::{self, Catalog, Item, Metadata};
+use crate::db::{Cell, ConnectionInfo, FetchResult, Repaint, Session};
+
+mod list;
+mod values;
+use list::popup;
+use values::{ValueCache, ValueOpts};
 
 const REFRESH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::R);
 /// Rows shown before the list scrolls; also what PageUp / PageDown move by.
@@ -35,10 +41,28 @@ enum Entry {
     Failed,
 }
 
-/// Catalogs per (connection, database), shared by every tab on the same connection.
-#[derive(Default)]
+/// Catalogs per (connection, database), shared by every tab on the same connection, and the
+/// value suggestions' cache.
 pub(super) struct MetaCache {
     entries: HashMap<(String, String), Entry>,
+    values: ValueCache,
+}
+
+/// What the completion settings say.
+pub(super) struct CompletionOpts {
+    pub auto_popup: bool,
+    pub values: ValueOpts,
+}
+
+impl CompletionOpts {
+    pub(super) fn from(s: &crate::settings::Settings) -> Self {
+        let values = ValueOpts {
+            on: s.value_suggestions,
+            scan_rows: s.value_scan_rows,
+            auto_max_table_rows: s.value_auto_max_table_rows,
+        };
+        Self { auto_popup: s.completion_auto_popup, values }
+    }
 }
 
 /// Same server and login: same metadata.
@@ -47,6 +71,10 @@ fn conn_key(info: &ConnectionInfo) -> String {
 }
 
 impl MetaCache {
+    pub(super) fn new(rt: tokio::runtime::Handle, repaint: Repaint) -> Self {
+        Self { entries: HashMap::new(), values: ValueCache::new(rt, repaint) }
+    }
+
     /// Starts loading `db` through `session` unless it is cached (or failed) already.
     fn ensure(&mut self, key: &str, session: &Session, db: &str) {
         self.entries.entry((key.to_string(), db.to_lowercase())).or_insert_with(|| Entry::Loading {
@@ -57,6 +85,7 @@ impl MetaCache {
 
     fn forget_connection(&mut self, key: &str) {
         self.entries.retain(|(k, _), _| k != key);
+        self.values.forget_connection(key);
     }
 
     fn get(&self, key: &str, db: &str) -> Option<&Catalog> {
@@ -72,6 +101,7 @@ impl MetaCache {
 
     /// Collects finished catalog queries; called every frame.
     pub(super) fn poll(&mut self) {
+        self.values.poll();
         for entry in self.entries.values_mut() {
             let Entry::Loading { rx, rows } = entry else { continue };
             let mut failed = false;
@@ -136,6 +166,8 @@ pub(super) struct CompletionState {
     /// Word start (char index) where Esc closed the popup: typing there doesn't reopen it.
     dismissed_at: Option<usize>,
     scroll_to_selected: bool,
+    /// Ctrl+Space was pressed for this word: value suggestions ignore the table size threshold.
+    explicit: bool,
     /// The database the cache was last told about, to notice `USE`.
     last_db: String,
     /// The running script may change the schema.
@@ -229,7 +261,7 @@ pub(super) fn after_edit(
     output: &TextEditOutput,
     keys: PopupKeys,
     cache: &mut MetaCache,
-    auto_popup: bool,
+    opts: &CompletionOpts,
 ) {
     let ctx = ui.ctx().clone();
     if let Some(s) = keys.surrender {
@@ -243,22 +275,51 @@ pub(super) fn after_edit(
         return;
     };
     let text = &tab.text;
-    let Some(cx) = completion::context(text, char_to_byte(text, caret)) else {
-        close(&mut tab.completion);
-        return;
+    let at = char_to_byte(text, caret);
+    // Without a connection there are still keywords and functions.
+    let key = tab.session.as_ref().map(|s| conn_key(&s.info));
+    let mut missing: Vec<String> = Vec::new();
+    // Experimental: where a column's value goes, that column (`None` until its catalog loads).
+    let value = match (opts.values.on, &key) {
+        (true, Some(k)) => vals::spot(text, at).and_then(|s| {
+            let lookup = |db: &str| cache.get(k, db);
+            let meta = Metadata { current_db: &tab.current_db, databases: &tab.databases, catalog: &lookup };
+            match vals::resolve(&s, &meta) {
+                Resolved::Column(t) => Some((s, Some(t))),
+                Resolved::Missing(dbs) => {
+                    missing = dbs;
+                    Some((s, None))
+                }
+                Resolved::No => None,
+            }
+        }),
+        _ => None,
     };
-    let word = byte_to_char(text, cx.word.start)..byte_to_char(text, cx.word.end);
+    let cx = completion::context(text, at);
+    let (range, prefix) = match (&value, &cx) {
+        (Some((s, _)), _) => (s.replace.clone(), s.typed.clone()),
+        (None, Some(cx)) => (cx.word.clone(), cx.prefix.clone()),
+        (None, None) => {
+            close(&mut tab.completion);
+            return;
+        }
+    };
+    // In a string only values are offered, even with nothing typed yet.
+    let quoted = value.as_ref().is_some_and(|(s, _)| s.quoted);
+    let word = byte_to_char(text, range.start)..byte_to_char(text, range.end);
     let st = &mut tab.completion;
     let typed = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_))));
-    let after_dot = cx.prefix.is_empty() && !cx.qualifier.is_empty();
+    let qualified = cx.as_ref().is_some_and(|c| !c.qualifier.is_empty());
+    let after_dot = prefix.is_empty() && qualified;
     if keys.invoke {
         st.active = true;
         st.dismissed_at = None;
+        st.explicit = true;
     } else if response.changed() {
-        if st.active && cx.prefix.is_empty() && cx.qualifier.is_empty() {
+        if st.active && !quoted && prefix.is_empty() && !qualified {
             st.active = false;
-        } else if !st.active && auto_popup && typed && st.dismissed_at != Some(word.start) {
-            st.active = after_dot || cx.prefix.chars().filter(|c| c.is_alphanumeric() || *c == '_').count() >= 2;
+        } else if !st.active && opts.auto_popup && typed && st.dismissed_at != Some(word.start) {
+            st.active = quoted || after_dot || prefix.chars().filter(|c| c.is_alphanumeric() || *c == '_').count() >= 2;
         }
     } else if st.active && word.start != st.word.start {
         // The caret moved to another word.
@@ -272,27 +333,36 @@ pub(super) fn after_edit(
         return;
     }
 
-    // Without a connection there are still keywords and functions.
-    let key = tab.session.as_ref().map(|s| conn_key(&s.info));
-    let found = {
-        let lookup = |db: &str| key.as_deref().and_then(|k| cache.get(k, db));
-        let meta = Metadata { current_db: &tab.current_db, databases: &tab.databases, catalog: &lookup };
-        completion::suggest(&cx, &meta)
-    };
+    let mut items = Vec::new();
+    let mut busy = false;
+    if let (Some((s, Some(t))), Some(session)) = (&value, &tab.session) {
+        let offer = cache.values.offer(&session.info, t, &s.typed, st.explicit, keys.invoke, &opts.values);
+        busy = offer.busy;
+        items = vals::items(&offer.values, t, s, offer.approximate);
+    }
+    if let (false, Some(cx)) = (quoted, &cx) {
+        let found = {
+            let lookup = |db: &str| key.as_deref().and_then(|k| cache.get(k, db));
+            let meta = Metadata { current_db: &tab.current_db, databases: &tab.databases, catalog: &lookup };
+            completion::suggest(cx, &meta)
+        };
+        missing.extend(found.missing);
+        items.extend(found.items);
+    }
     if let (Some(session), Some(key)) = (&tab.session, &key) {
-        for db in found.missing.iter().filter(|db| !db.is_empty()) {
+        for db in missing.iter().filter(|db| !db.is_empty()) {
             cache.ensure(key, session, db);
         }
     }
-    if cache.loading() {
-        ctx.request_repaint_after(Duration::from_millis(100));
+    if cache.loading() || busy {
+        ctx.request_repaint_after(Duration::from_millis(if busy { 50 } else { 100 }));
     }
-    if word.start != st.word.start || cx.prefix != st.prefix {
+    if word.start != st.word.start || prefix != st.prefix {
         st.selected = 0;
     }
-    st.items = found.items;
+    st.items = items;
     st.word = word;
-    st.prefix = cx.prefix;
+    st.prefix = prefix;
     let n = st.items.len();
     if n > 0 && keys.moves != 0 {
         st.selected = st.selected.saturating_add_signed(keys.moves).min(n - 1);
@@ -303,27 +373,24 @@ pub(super) fn after_edit(
         close(st);
         return;
     }
-    if keys.accept && n > 0 {
-        let insert = st.items[st.selected.min(n - 1)].insert.clone();
-        let word = st.word.clone();
+    let chosen = if keys.accept && n > 0 {
+        Some(st.selected.min(n - 1))
+    } else {
+        st.visible = n > 0;
+        // Keep focus on Esc from the very next frame (the TextEdit only updates it as it runs).
+        let filter = EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: st.visible };
+        ctx.memory_mut(|m| m.set_focus_lock_filter(editor, filter));
+        if st.visible { popup(&ctx, editor, output, st) } else { None }
+    };
+    if let Some(i) = chosen {
+        let item = st.items[i].clone();
+        // An item may replace more than the word (`= '` becomes `IS NULL`).
+        let word = match &item.replace {
+            Some(r) => byte_to_char(&tab.text, r.start)..byte_to_char(&tab.text, r.end),
+            None => st.word.clone(),
+        };
         close(st);
-        accept(&ctx, editor, &mut tab.text, word, &insert);
-        return;
-    }
-    st.visible = n > 0;
-    // Keep focus on Esc from the very next frame (the TextEdit only updates it as it runs).
-    ctx.memory_mut(|m| {
-        m.set_focus_lock_filter(
-            editor,
-            EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: st.visible },
-        )
-    });
-    if st.visible
-        && let Some(i) = popup(&ctx, editor, output, st)
-    {
-        let (insert, word) = (st.items[i].insert.clone(), st.word.clone());
-        close(st);
-        accept(&ctx, editor, &mut tab.text, word, &insert);
+        accept(&ctx, editor, &mut tab.text, word, &item.insert);
     }
 }
 
@@ -332,97 +399,7 @@ fn close(st: &mut CompletionState) {
     st.visible = false;
     st.items.clear();
     st.selected = 0;
-}
-
-fn kind_color(kind: Kind, dark: bool) -> Color32 {
-    let (d, l) = match kind {
-        Kind::Keyword => ((86, 156, 214), (0, 0, 200)),
-        Kind::Function => ((220, 140, 220), (170, 0, 170)),
-        Kind::Table | Kind::View => ((78, 201, 176), (0, 120, 110)),
-        Kind::Column => ((156, 220, 254), (0, 100, 150)),
-        Kind::Procedure => ((220, 180, 100), (150, 90, 0)),
-        Kind::Schema | Kind::Database => ((200, 200, 120), (110, 110, 0)),
-    };
-    let (r, g, b) = if dark { d } else { l };
-    Color32::from_rgb(r, g, b)
-}
-
-fn ellipsize(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_string() } else { format!("{}…", s.chars().take(max - 1).collect::<String>()) }
-}
-
-/// Draws the list under (or above) the word at the caret; returns a clicked row.
-fn popup(ctx: &egui::Context, editor: Id, output: &TextEditOutput, st: &mut CompletionState) -> Option<usize> {
-    let at = output.galley.pos_from_cursor(CCursor::new(st.word.start)).translate(output.galley_pos.to_vec2());
-    if !output.text_clip_rect.intersects(at) {
-        return None;
-    }
-    let row_h = 20.0;
-    let height = row_h * st.items.len().min(ROWS) as f32 + 8.0;
-    let (pos, pivot) = if at.bottom() + height > ctx.content_rect().bottom() {
-        (at.left_top(), Align2::LEFT_BOTTOM)
-    } else {
-        (at.left_bottom(), Align2::LEFT_TOP)
-    };
-    let dark = ctx.global_style().visuals.dark_mode;
-    let mut clicked = None;
-    egui::Area::new(area_id(editor)).order(Order::Foreground).fixed_pos(pos).pivot(pivot).constrain(true).show(
-        ctx,
-        |ui| {
-            egui::Frame::popup(ui.style()).inner_margin(4.0).show(ui, |ui| {
-                ui.set_width(WIDTH);
-                egui::ScrollArea::vertical().max_height(row_h * ROWS as f32).auto_shrink([false, true]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    let visuals = ui.visuals().clone();
-                    for (i, item) in st.items.iter().enumerate() {
-                        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::CLICK);
-                        let selected = i == st.selected;
-                        let painter = ui.painter_at(rect);
-                        if selected {
-                            painter.rect_filled(rect, 3.0, visuals.selection.bg_fill);
-                        } else if resp.hovered() {
-                            painter.rect_filled(rect, 3.0, visuals.widgets.hovered.weak_bg_fill);
-                        }
-                        let fg = if selected { visuals.selection.stroke.color } else { visuals.text_color() };
-                        let y = rect.center().y;
-                        painter.text(
-                            egui::pos2(rect.left() + 6.0, y),
-                            Align2::LEFT_CENTER,
-                            item.kind.label(),
-                            FontId::proportional(11.0),
-                            kind_color(item.kind, dark),
-                        );
-                        painter.text(
-                            egui::pos2(rect.left() + 76.0, y),
-                            Align2::LEFT_CENTER,
-                            ellipsize(&item.name, 34),
-                            FontId::monospace(13.0),
-                            fg,
-                        );
-                        painter.text(
-                            egui::pos2(rect.right() - 6.0, y),
-                            Align2::RIGHT_CENTER,
-                            ellipsize(&item.detail, 30),
-                            FontId::proportional(11.0),
-                            visuals.weak_text_color(),
-                        );
-                        let label = format!("{} {} {}", item.name, item.kind.label(), item.detail);
-                        resp.widget_info(|| {
-                            egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, selected, label.trim_end())
-                        });
-                        if selected && st.scroll_to_selected {
-                            resp.scroll_to_me(None);
-                        }
-                        if resp.clicked() {
-                            clicked = Some(i);
-                        }
-                    }
-                });
-            });
-        },
-    );
-    st.scroll_to_selected = false;
-    clicked
+    st.explicit = false;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -450,6 +427,16 @@ impl SqlKraftApp {
         if ui
             .checkbox(&mut self.settings.completion_auto_popup, "Show completion list while typing")
             .on_hover_text("Ctrl+Space shows it anytime")
+            .changed()
+        {
+            self.settings.save();
+        }
+        if ui
+            .checkbox(&mut self.settings.value_suggestions, "Suggest column values (experimental)")
+            .on_hover_text(
+                "In WHERE c.City = '…, offer the column's most common values. Reads table data on a separate \
+                 connection, after a typing pause, at most a set number of rows; large tables only on Ctrl+Space.",
+            )
             .changed()
         {
             self.settings.save();

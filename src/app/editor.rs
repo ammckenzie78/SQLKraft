@@ -2,11 +2,11 @@
 
 use eframe::egui::{self, Color32, FontId, RichText, TextFormat, text::LayoutJob};
 
-use super::completion_popup::{self, MetaCache};
+use super::completion_popup::{self, CompletionOpts, MetaCache};
 use super::query_tab::QueryTab;
 use crate::sql::{self, Tok};
 
-pub(super) fn editor(ui: &mut egui::Ui, tab: &mut QueryTab, font_size: f32, dark: bool, meta: &mut MetaCache, auto_popup: bool) {
+pub(super) fn editor(ui: &mut egui::Ui, tab: &mut QueryTab, font_size: f32, dark: bool, meta: &mut MetaCache, opts: &CompletionOpts) {
     let font = FontId::monospace(font_size);
     let id = egui::Id::unique(("editor_text", tab.id));
     // Before the TextEdit, so the popup's keys never reach it.
@@ -72,7 +72,7 @@ pub(super) fn editor(ui: &mut egui::Ui, tab: &mut QueryTab, font_size: f32, dark
             .inner
         })
         .inner;
-    completion_popup::after_edit(ui, id, tab, &output, keys, meta, auto_popup);
+    completion_popup::after_edit(ui, id, tab, &output, keys, meta, opts);
 }
 
 fn highlight(text: &str, font: &FontId, dark: bool) -> LayoutJob {

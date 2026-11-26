@@ -246,6 +246,23 @@ fn unique_name() -> String {
     format!("sqlkraft_test_{}", uuid::Uuid::new_v4().simple())
 }
 
+/// For value suggestions: `dbo.Places` with known value frequencies (27 rows): Oshkosh 6,
+/// Madison 5, Wautoma 4, Marshfield 3, Mauston 2, Mayville 2, NULL 2, and once each Manitowoc,
+/// `100%_[x]` and `O'Brien`. Every row's `Code` is `wi`.
+pub const PLACES: &str = r#"
+CREATE TABLE dbo.Places (
+    Id int IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    City nvarchar(50) NULL,
+    Code varchar(10) NOT NULL DEFAULT ('wi')
+);
+GO
+INSERT dbo.Places (City)
+SELECT v.City FROM (VALUES (N'Oshkosh', 6), (N'Madison', 5), (N'Wautoma', 4), (N'Marshfield', 3), (N'Mauston', 2),
+    (N'Mayville', 2), (NULL, 2), (N'Manitowoc', 1), (N'100%_[x]', 1), (N'O''Brien', 1)) AS v (City, n)
+CROSS APPLY (SELECT TOP (v.n) 1 AS x FROM sys.all_objects) AS t;
+GO
+"#;
+
 /// Objects every fixture database starts with. Names cover a non-dbo schema, spaces and `]`.
 pub const SEED: &str = r#"
 CREATE SCHEMA sales;

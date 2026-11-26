@@ -311,7 +311,7 @@ pub type FetchResult = anyhow::Result<(Vec<ColumnMeta>, Vec<Vec<Cell>>)>;
 pub enum Request {
     Execute { batches: Vec<Batch>, cancel: CancellationToken },
     /// Run a query and hand back its first result set; used by Object Explorer & scripting.
-    Fetch { sql: String, reply: oneshot::Sender<FetchResult> },
+    Fetch { sql: String, reply: oneshot::Sender<FetchResult>, timeout: Option<Duration> },
     UseDatabase(String),
     Close,
 }
@@ -346,7 +346,15 @@ impl Session {
 
     pub fn fetch(&self, sql: impl Into<String>) -> oneshot::Receiver<FetchResult> {
         let (reply, rx) = oneshot::channel();
-        let _ = self.tx.send(Request::Fetch { sql: sql.into(), reply });
+        let _ = self.tx.send(Request::Fetch { sql: sql.into(), reply, timeout: None });
+        rx
+    }
+
+    /// Like [`Session::fetch`], but gives up after `timeout`. The connection is then dropped
+    /// (and reopened on the next request), which also ends the query on the server.
+    pub fn fetch_within(&self, sql: impl Into<String>, timeout: Duration) -> oneshot::Receiver<FetchResult> {
+        let (reply, rx) = oneshot::channel();
+        let _ = self.tx.send(Request::Fetch { sql: sql.into(), reply, timeout: Some(timeout) });
         rx
     }
 
@@ -399,9 +407,15 @@ async fn worker(
         };
         let healthy = match req {
             Request::Execute { batches, cancel } => run_batches(c, &batches, &cancel, &out).await,
-            Request::Fetch { sql, reply } => {
-                let r = fetch(c, &sql).await;
-                let broken = r.as_ref().err().is_some_and(is_io_error);
+            Request::Fetch { sql, reply, timeout } => {
+                let (r, timed_out) = match timeout {
+                    None => (fetch(c, &sql).await, false),
+                    Some(t) => match tokio::time::timeout(t, fetch(c, &sql)).await {
+                        Ok(r) => (r, false),
+                        Err(_) => (Err(anyhow!("timed out after {} ms", t.as_millis())), true),
+                    },
+                };
+                let broken = timed_out || r.as_ref().err().is_some_and(is_io_error);
                 let _ = reply.send(r);
                 !broken
             }

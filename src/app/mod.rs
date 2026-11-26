@@ -138,6 +138,7 @@ impl SqlKraftApp {
         };
         ctx.set_theme(if settings.dark_mode { egui::Theme::Dark } else { egui::Theme::Light });
         let info = settings.recent.first().cloned().unwrap_or_default();
+        let meta = completion_popup::MetaCache::new(rt.clone(), repaint.clone());
         let mut app = Self {
             rt,
             repaint,
@@ -158,7 +159,7 @@ impl SqlKraftApp {
             shrink: None,
             backup: None,
             restore: None,
-            meta: Default::default(),
+            meta,
             selection: None,
             props: None,
             designers: Vec::new(),

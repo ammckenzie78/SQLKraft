@@ -28,6 +28,33 @@ pub struct Column {
     pub name: String,
     /// `nvarchar(100), not null`
     pub type_name: String,
+    pub nullable: bool,
+    /// How a value of this column is written as a literal, when its values can be suggested.
+    pub literal: Option<Literal>,
+}
+
+/// String literal style for a column whose values can be suggested: character types that are
+/// not `(max)` and not computed-without-being-persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Literal {
+    /// `'...'` for char / varchar.
+    Ansi,
+    /// `N'...'` for nchar / nvarchar (and sysname).
+    Unicode,
+}
+
+impl Literal {
+    /// `ty` is the system type name, `max_length` as in `sys.columns` (-1 for `(max)`).
+    pub fn of(ty: &str, max_length: &str, computed_unpersisted: bool) -> Option<Self> {
+        if computed_unpersisted || max_length.trim() == "-1" {
+            return None;
+        }
+        match ty.to_ascii_lowercase().as_str() {
+            "char" | "varchar" => Some(Literal::Ansi),
+            "nchar" | "nvarchar" => Some(Literal::Unicode),
+            _ => None,
+        }
+    }
 }
 
 /// One database's schemas, objects and columns.
@@ -53,10 +80,13 @@ impl Catalog {
                  ORDER BY s.name, o.name"
             ),
             format!(
-                "SELECT s.name, o.name, c.name, ty.name, c.max_length, c.precision, c.scale, c.is_nullable \
+                "SELECT s.name, o.name, c.name, ty.name, c.max_length, c.precision, c.scale, c.is_nullable, \
+                 bt.name, CASE WHEN c.is_computed = 1 AND ISNULL(cc.is_persisted, 0) = 0 THEN 1 ELSE 0 END \
                  FROM {d}.sys.columns c JOIN {d}.sys.objects o ON o.object_id = c.object_id \
                  JOIN {d}.sys.schemas s ON s.schema_id = o.schema_id \
                  JOIN {d}.sys.types ty ON ty.user_type_id = c.user_type_id \
+                 LEFT JOIN {d}.sys.types bt ON bt.user_type_id = c.system_type_id \
+                 LEFT JOIN {d}.sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id \
                  WHERE o.type IN ('U','V','IF','TF','FT') AND o.is_ms_shipped = 0 \
                  ORDER BY s.name, o.name, c.column_id"
             ),
@@ -83,10 +113,14 @@ impl Catalog {
         let mut map: HashMap<(String, String), Vec<Column>> = HashMap::new();
         for r in &columns {
             let ty = type_spec(&s(r, 3), &s(r, 4), &s(r, 5), &s(r, 6));
-            let null = if s(r, 7) == "1" { "null" } else { "not null" };
+            let nullable = s(r, 7) == "1";
+            let null = if nullable { "null" } else { "not null" };
+            // The system type behind an alias type; older rows (and tests) may not have it.
+            let base = Some(s(r, 8)).filter(|b| !b.is_empty()).unwrap_or_else(|| s(r, 3));
+            let literal = Literal::of(&base, &s(r, 4), s(r, 9) == "1");
             map.entry((s(r, 0).to_lowercase(), s(r, 1).to_lowercase()))
                 .or_default()
-                .push(Column { name: s(r, 2), type_name: format!("{ty}, {null}") });
+                .push(Column { name: s(r, 2), type_name: format!("{ty}, {null}"), nullable, literal });
         }
         Self { schemas: schemas.iter().map(|r| s(r, 0)).collect(), objects, columns: map }
     }

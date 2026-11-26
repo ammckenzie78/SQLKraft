@@ -294,5 +294,14 @@ fn catalog_queries_name_the_database() {
     let c = shop();
     assert_eq!(c.find(None, "customers").map(|o| o.schema.as_str()), Some("dbo"));
     assert_eq!(c.find(Some("SALES"), "order lines").map(|o| o.kind), Some(ObjKind::Table));
-    assert_eq!(c.columns("DBO", "customers")[1], Column { name: "Name".into(), type_name: "nvarchar(100), not null".into() });
+    let name = Column {
+        name: "Name".into(),
+        type_name: "nvarchar(100), not null".into(),
+        nullable: false,
+        literal: Some(Literal::Unicode),
+    };
+    assert_eq!(c.columns("DBO", "customers")[1], name);
+    // Rows without the base type and computed flag (older servers' shape) still load.
+    assert_eq!(c.columns("dbo", "customers")[2].literal, Some(Literal::Ansi));
+    assert_eq!(c.columns("dbo", "customers")[0].literal, None);
 }
