@@ -21,6 +21,20 @@ desktop app, a single binary with no .NET or ODBC, and it runs on Linux, Windows
 - Right-click actions: *New Query*, *Select Top 1000 Rows*, *Script as SELECT*, *Script as CREATE* (tables, views, procedures, functions), *Execute Stored Procedure*, *Copy name*, *Refresh*, *Reconnect*, *Disconnect*.
 - Double-clicking a table or view runs Select Top 1000 Rows.
 
+**Table designer**
+- Right-click a database's *Tables* folder → *New Table…*, or a table → *Design*.
+- A grid with one row per column: name, data type with length / precision / scale, allow
+  nulls, default, identity (seed and increment) and primary key (one or more columns). Schema
+  and table name default to `dbo`.
+- **Generate Script** never changes the table itself. It opens the T-SQL in a new query tab on
+  that database for you to review and run with F5: `CREATE TABLE` for a new table, or for
+  *Design* one `ALTER TABLE` / `sp_rename` statement per change (add, drop, rename and alter
+  columns, add / drop / change defaults, change the primary key), ordered so that it works and
+  wrapped in a single transaction.
+- Changes that need the table to be rebuilt (making a column an identity or not, changing
+  its seed or increment, or moving columns) are refused with a message instead of scripted.
+  Indexes, foreign keys and check constraints aren't edited here yet.
+
 **Properties window**
 - Press **F4** (or View → Properties Window, or right-click → *Properties*) to open a pane showing read-only properties of the item selected in Object Explorer, grouped by category like SSMS.
 - Servers: edition, version, collation, authentication mode, memory and parallelism settings, plus the connection's own settings.
@@ -251,7 +265,7 @@ SQLKRAFT_TEST_SERVER=localhost,1433 SQLKRAFT_TEST_USER=sqlkraft_test SQLKRAFT_TE
 - **Messages are captured from tracing events.** tiberius doesn't expose PRINT output or row counts in its API. SQLKraft reads them from the driver's `tracing` events (`src/capture.rs`). A future tiberius release could change those events, and the Messages tab would then lose them.
 - **Encryption on older servers.** SQL Server 2012 and older often can't negotiate TLS 1.2. Use *Encrypt: Optional* for those servers.
 - **Row limit.** A result set keeps at most *Max rows per result* rows (View menu, default 1,000,000).
-- **Not yet implemented:** execution plans, IntelliSense, Activity Monitor, the table designer, and agent jobs.
+- **Not yet implemented:** execution plans, Activity Monitor, and agent jobs.
 
 ## Settings
 

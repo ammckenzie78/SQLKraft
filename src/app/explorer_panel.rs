@@ -232,8 +232,14 @@ fn node_menu(
                 });
             });
         }
+        NodeKind::TablesFolder { db } => {
+            item(ui, "New Table…", Action::NewTable { server, db: db.clone() });
+        }
         NodeKind::Table { .. } | NodeKind::View { .. } | NodeKind::Procedure { .. } | NodeKind::Function { .. } => {
             let is_table = matches!(kind, NodeKind::Table { .. });
+            if is_table {
+                item(ui, "Design", Action::Design { server, kind: kind.clone() });
+            }
             if matches!(kind, NodeKind::Table { .. } | NodeKind::View { .. }) {
                 item(ui, "Select Top 1000 Rows", Action::SelectTop { server, kind: kind.clone(), run: true });
                 item(ui, "Script as SELECT", Action::SelectTop { server, kind: kind.clone(), run: false });
