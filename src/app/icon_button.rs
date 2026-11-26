@@ -35,6 +35,25 @@ pub(super) fn icon_button(ui: &mut egui::Ui, icon: Icon, enabled: bool, danger: 
     resp
 }
 
+/// A button showing one emoji glyph, like `ui.button("💾")`, but with the glyph moved down by
+/// `nudge_y` points. Some emoji sit high in their line box, so egui's own centring (which centres
+/// the line, not the glyph) leaves them looking top-aligned.
+pub(super) fn glyph_button(ui: &mut egui::Ui, glyph: &str, enabled: bool, nudge_y: f32) -> egui::Response {
+    let galley = egui::WidgetText::from(glyph).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button);
+    let pad = ui.spacing().button_padding;
+    let size = Vec2::new(galley.size().x + 2.0 * pad.x, (galley.size().y + 2.0 * pad.y).max(ui.spacing().interact_size.y));
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
+    if ui.is_rect_visible(rect) {
+        let v = if enabled { ui.style().interact(&resp) } else { &ui.visuals().widgets.inactive };
+        ui.painter().rect(rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, egui::StrokeKind::Inside);
+        let pos = rect.center() - galley.size() / 2.0 + Vec2::new(0.0, nudge_y);
+        let tint = if enabled { Color32::WHITE } else { Color32::from_white_alpha(110) };
+        ui.painter().galley_with_override_text_color(pos, galley, tint);
+    }
+    resp
+}
+
 /// Draws `icon` centred on `c`; `r` is half its width.
 pub(super) fn paint(p: &egui::Painter, icon: Icon, c: Pos2, r: f32, stroke: Stroke) {
     match icon {
