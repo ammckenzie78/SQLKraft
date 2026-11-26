@@ -234,7 +234,9 @@ impl SqlKraftApp {
             if ui.button("📂").on_hover_text(keys("Open file (Ctrl+O)")).clicked() {
                 self.open_file();
             }
-            if ui.add_enabled(!self.tabs.is_empty(), egui::Button::new("💾")).on_hover_text(keys("Save (Ctrl+S)")).clicked() {
+            // The disk glyph sits high in its line; nudge it down so it looks centred.
+            let save = super::icon_button::glyph_button(ui, "💾", !self.tabs.is_empty(), 2.0);
+            if save.on_hover_text(keys("Save (Ctrl+S)")).accessible_name("Save file").clicked() {
                 self.save_tab(self.active, false);
             }
             ui.separator();
