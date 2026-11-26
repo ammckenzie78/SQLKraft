@@ -1,6 +1,6 @@
 [package]
 name = "sqlkraft"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "A SQL Server management studio for Linux (and everywhere else), written in Rust"
 license = "MIT"
