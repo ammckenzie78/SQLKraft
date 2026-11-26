@@ -295,22 +295,9 @@ fn drag_handle(ui: &mut egui::Ui, active: bool) -> egui::Response {
     resp
 }
 
-/// A square button with an X painted at its exact centre (the ✖ glyph sat off-centre and came
-/// out in the emoji font's colour).
+/// The row's remove button: a painted X, red on hover.
 fn remove_button(ui: &mut egui::Ui) -> egui::Response {
-    let size = ui.spacing().interact_size.y;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let v = ui.style().interact(&resp);
-        ui.painter().rect(rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, egui::StrokeKind::Inside);
-        let color = if resp.hovered() { Color32::from_rgb(220, 80, 80) } else { v.fg_stroke.color };
-        let r = size * 0.18;
-        let c = rect.center();
-        let stroke = egui::Stroke::new(1.6, color);
-        ui.painter().line_segment([c + egui::vec2(-r, -r), c + egui::vec2(r, r)], stroke);
-        ui.painter().line_segment([c + egui::vec2(-r, r), c + egui::vec2(r, -r)], stroke);
-    }
-    resp
+    super::icon_button::icon_button(ui, super::icon_button::Icon::Close, true, true)
 }
 
 /// Type through Primary Key for an ordinary (not computed) column.

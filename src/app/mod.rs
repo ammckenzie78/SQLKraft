@@ -7,6 +7,7 @@ mod designer_view;
 mod dialogs;
 mod editor;
 mod explorer_panel;
+mod icon_button;
 mod file_dialogs;
 mod file_browser;
 mod properties_pane;

@@ -3,6 +3,7 @@
 use eframe::egui::{self, Align, Color32, Layout, RichText};
 use tokio::sync::oneshot;
 
+use super::icon_button::{Icon, icon_button};
 use super::{ConnState, SqlKraftApp};
 use crate::db::FetchResult;
 use crate::explorer::NodeKind;
@@ -87,10 +88,11 @@ impl SqlKraftApp {
         ui.horizontal(|ui| {
             ui.strong("Properties");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("✕").on_hover_text("Close (F4)").clicked() {
+                if icon_button(ui, Icon::Close, true, false).on_hover_text("Close (F4)").accessible_name("Close Properties").clicked() {
                     close = true;
                 }
-                if ui.add_enabled(self.props.is_some(), egui::Button::new("⟳").small()).on_hover_text("Refresh").clicked() {
+                let can_refresh = self.props.is_some();
+                if icon_button(ui, Icon::Refresh, can_refresh, false).on_hover_text("Refresh").accessible_name("Refresh Properties").clicked() {
                     refresh = true;
                 }
             });
